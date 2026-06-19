@@ -83,13 +83,18 @@ def _serialize(fig: go.Figure) -> FigureDict:
     -------
     FigureDict
         A plain ``{"data": [...], "layout": {...}}`` mapping.
-
-    Raises
-    ------
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    raise NotImplementedError("_serialize: typed stub — body to be authored.")
+    import json
+
+    import plotly.io as pio
+
+    # ``to_json`` walks the figure to a JSON string with no numpy scalars or Plotly
+    # classes left in it; ``json.loads`` then yields a plain ``dict``. ``validate=False``
+    # skips Plotly's schema validation (the traces are built in-house from trusted,
+    # already-finite arrays). The result is exactly the ``{data, layout}`` shape the
+    # FastAPI layer returns and the frontend ``PlotlyChart`` renders.
+    payload: FigureDict = json.loads(pio.to_json(fig, validate=False))
+    return payload
 
 
 def equity_overlay_figure(
@@ -138,7 +143,52 @@ def equity_overlay_figure(
             f"equity_overlay_figure: backtest ({bt.size}), live ({live.size}), and "
             f"buy-hold ({bh.size}) equity curves must have the same length."
         )
-    raise NotImplementedError("equity_overlay_figure: typed stub — body to be authored.")
+
+    # LAZY plotly: imported here (the ``viz`` extra) so importing this module pulls
+    # in nothing heavy and has no side effects.
+    import plotly.graph_objects as go
+
+    x = list(range(bt.size))
+    fig = go.Figure()
+    # Backtest first (solid), then the paper-broker "live" curve as a dashed overlay
+    # on top — they should COINCIDE to the eye (the parity oracle), so the dashed
+    # line tracks exactly over the solid one. Buy-and-hold is the bar to clear.
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=bt.tolist(),
+            mode="lines",
+            name="Backtest",
+            line={"color": "#2563eb", "width": 2},
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=live.tolist(),
+            mode="lines",
+            name="Live (paper broker)",
+            line={"color": "#f59e0b", "width": 2, "dash": "dash"},
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=bh.tolist(),
+            mode="lines",
+            name="Buy & hold",
+            line={"color": "#94a3b8", "width": 1.5},
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="Bar",
+        yaxis_title="Equity (wealth index)",
+        template="plotly_white",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0.0},
+        margin={"l": 60, "r": 20, "t": 60, "b": 50},
+    )
+    return _serialize(fig)
 
 
 def drawdown_figure(
@@ -171,5 +221,39 @@ def drawdown_figure(
     NotImplementedError
         Always (this is a typed stub for a sequential author).
     """
-    _finite_1d(net_returns, name="net_returns")
-    raise NotImplementedError("drawdown_figure: typed stub — body to be authored.")
+    arr = _finite_1d(net_returns, name="net_returns")
+
+    # LAZY plotly: imported here (the ``viz`` extra) so importing this module pulls
+    # in nothing heavy and has no side effects.
+    import plotly.graph_objects as go
+
+    # Cumulative wealth W_t = prod_{s<=t}(1 + r_s), its running peak, and the
+    # peak-to-trough drawdown W_t / max_{s<=t} W_s - 1 (<= 0). Mirrors the same
+    # accounting as ``evaluation.metrics.max_drawdown`` so the chart and the scalar
+    # agree.
+    wealth = np.cumprod(1.0 + arr)
+    running_peak = np.maximum.accumulate(wealth)
+    drawdown = wealth / running_peak - 1.0
+
+    x = list(range(drawdown.size))
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=drawdown.tolist(),
+            mode="lines",
+            name="Drawdown",
+            fill="tozeroy",
+            line={"color": "#dc2626", "width": 1.5},
+            fillcolor="rgba(220, 38, 38, 0.2)",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="Bar",
+        yaxis_title="Drawdown",
+        template="plotly_white",
+        showlegend=False,
+        margin={"l": 60, "r": 20, "t": 60, "b": 50},
+    )
+    return _serialize(fig)
