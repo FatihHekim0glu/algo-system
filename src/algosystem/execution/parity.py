@@ -28,9 +28,18 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+import numpy as np
+
 from algosystem._exceptions import ParityError, ValidationError
 from algosystem._typing import FloatArray, PositionSequence, ReturnSeries
-from algosystem.backtest.engine import BacktestResult
+from algosystem.backtest.engine import (
+    BacktestResult,
+    _as_float_array,
+    _score_positions,
+    equity_curve,
+    vectorized_backtest,
+)
+from algosystem.execution.paper_broker import PaperBrokerConfig, replay
 
 #: The parity tolerance: the two paths must agree to this absolute max-diff.
 PARITY_TOL: float = 1e-10
@@ -107,7 +116,33 @@ def check_parity(
     """
     if tol < 0.0:
         raise ValidationError(f"tol must be >= 0, got {tol!r}.")
-    raise NotImplementedError("check_parity: typed stub — body to be authored.")
+
+    # Run the SAME (returns, positions, friction) through both the vectorized
+    # backtester and the simulated bar-by-bar paper broker. The two ingest, charge
+    # friction, and accrue wealth identically, so an honest pair produces the same
+    # equity curve; any divergence means the vectorized path peeked at the future
+    # or a fill-timing bug crept in.
+    bt = vectorized_backtest(
+        returns,
+        positions,
+        cost_bps=cost_bps,
+        slippage_bps=slippage_bps,
+    )
+    live = replay(
+        returns,
+        positions,
+        PaperBrokerConfig(cost_bps=cost_bps, slippage_bps=slippage_bps),
+    )
+
+    bt_equity = np.asarray(bt.equity_curve, dtype="float64").ravel()
+    live_equity = np.asarray(live.equity_curve, dtype="float64").ravel()
+    max_abs_diff = float(np.max(np.abs(bt_equity - live_equity)))
+    return ParityReport(
+        max_abs_diff=max_abs_diff,
+        tol=float(tol),
+        passed=bool(max_abs_diff <= tol),
+        n_bars=int(bt_equity.size),
+    )
 
 
 def assert_parity(
@@ -148,10 +183,24 @@ def assert_parity(
         If the parity check fails (a look-ahead / fill-timing bug).
     ValidationError
         If the inputs are malformed.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    raise NotImplementedError("assert_parity: typed stub — body to be authored.")
+    report = check_parity(
+        returns,
+        positions,
+        cost_bps=cost_bps,
+        slippage_bps=slippage_bps,
+        tol=tol,
+    )
+    if not report.passed:
+        _raise_parity_error(report)
+    # On success both paths produce the same curve; return the vectorized one.
+    bt = vectorized_backtest(
+        returns,
+        positions,
+        cost_bps=cost_bps,
+        slippage_bps=slippage_bps,
+    )
+    return np.asarray(bt.equity_curve, dtype="float64").ravel()
 
 
 def leaky_vectorized_backtest(
@@ -199,7 +248,45 @@ def leaky_vectorized_backtest(
     """
     if not isinstance(cost_bps, float | int) or cost_bps < 0.0:
         raise ValidationError(f"cost_bps must be >= 0, got {cost_bps!r}.")
-    raise NotImplementedError("leaky_vectorized_backtest: typed stub — body to be authored.")
+    if not isinstance(slippage_bps, float | int) or slippage_bps < 0.0:
+        raise ValidationError(f"slippage_bps must be >= 0, got {slippage_bps!r}.")
+
+    r = _as_float_array(returns, name="returns")
+    pi = _as_float_array(positions, name="positions")
+    if r.size != pi.size:
+        raise ValidationError(
+            f"returns and positions must have the same length, got {r.size} and {pi.size}."
+        )
+
+    friction_bps = float(cost_bps) + float(slippage_bps)
+    # Reuse the shared kernel for the position/cost/traded arrays (costs are
+    # charged on |pi_t - pi_{t-1}| exactly as in the honest backtester), then
+    # OVERWRITE the gross/net with the SAME-bar return pi_t * r_t. The honest
+    # kernel earns r_{t+1}; this leaky variant earns r_t (acting on the decision
+    # bar's own, not-yet-known-at-decision return) — a deliberate look-ahead bug
+    # the parity oracle must catch.
+    applied, _gross_causal, costs, _net_causal, traded = _score_positions(
+        r, pi, friction_bps=friction_bps, initial_position=float(initial_position)
+    )
+    n_scored = applied.size
+    gross = applied * r[:n_scored]  # LEAKY: pi_t * r_t (same bar).
+    net = gross - costs
+
+    return BacktestResult(
+        net_returns=net,
+        gross_returns=gross,
+        equity_curve=equity_curve(net),
+        positions=applied,
+        turnover=float(np.sum(traded)),
+        costs=costs,
+        n_bars=int(net.size),
+        meta={
+            "cost_bps": float(cost_bps),
+            "slippage_bps": float(slippage_bps),
+            "initial_position": float(initial_position),
+            "leaky": True,
+        },
+    )
 
 
 def _raise_parity_error(report: ParityReport) -> None:
@@ -212,10 +299,13 @@ def _raise_parity_error(report: ParityReport) -> None:
     ------
     ParityError
         Always, describing the divergence in ``report``.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    raise NotImplementedError("_raise_parity_error: typed stub — body to be authored.")
+    raise ParityError(
+        f"backtest<->live parity FAILED: max abs equity diff "
+        f"{report.max_abs_diff:.3e} exceeds tol {report.tol:.3e} over "
+        f"{report.n_bars} bar(s) — the vectorized backtest peeked at a future "
+        "bar (a look-ahead bug) or a fill-timing bug crept in."
+    )
 
 
 # Re-export the parity-failure exception type for callers that catch it.

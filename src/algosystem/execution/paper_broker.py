@@ -32,8 +32,10 @@ from typing import Any
 
 import numpy as np
 
-from algosystem._exceptions import ValidationError
+from algosystem._exceptions import InsufficientDataError, ValidationError
 from algosystem._typing import FloatArray, PositionSequence, ReturnSeries
+from algosystem.backtest.bar_finality import BarStatus, guard_order
+from algosystem.backtest.engine import _as_float_array
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,4 +184,70 @@ def replay(
     cfg = config if config is not None else PaperBrokerConfig()
     if not isinstance(cfg, PaperBrokerConfig):  # pragma: no cover - defensive type guard
         raise ValidationError("replay: config must be a PaperBrokerConfig.")
-    raise NotImplementedError("replay: typed stub — body to be authored.")
+
+    # Ingest IDENTICALLY to the vectorized backtester (same flatten + finiteness
+    # gate), so any NaN/Inf is rejected before it can silently desync the curves.
+    r = _as_float_array(returns, name="returns")
+    pi = _as_float_array(positions, name="positions")
+    if r.size != pi.size:
+        raise ValidationError(
+            f"replay: returns and positions must have the same length, got "
+            f"{r.size} and {pi.size}."
+        )
+    if r.size < 2:
+        raise InsufficientDataError(
+            f"replay needs at least 2 bars to fill one next-bar-open order, got {r.size}."
+        )
+
+    friction = (float(cfg.cost_bps) + float(cfg.slippage_bps)) / 1e4
+    n_scored = r.size - 1  # one next-bar-open fill per (t -> t+1) pair.
+
+    net = np.empty(n_scored, dtype="float64")
+    realized = np.empty(n_scored, dtype="float64")
+    equity = np.empty(n_scored, dtype="float64")
+    fills: list[Fill] = []
+
+    # Walk the bars the way a live trader would. At the CLOSE of bar ``t`` the
+    # target ``pi_t`` is read; the bar-finality guard rejects acting on a forming
+    # bar (each ``t`` here is a CLOSED bar by construction of the replay); the
+    # order then fills at the NEXT bar's OPEN (index ``t + 1``) with friction
+    # charged on the traded change ``|pi_t - pi_{t-1}|`` (pi_{-1} = initial). The
+    # held position earns the next bar's return ``r_{t+1}``. This is the same
+    # accounting kernel the vectorized backtester applies, so the equity curves
+    # coincide to 1e-10 (the parity oracle).
+    prev = float(cfg.initial_position)
+    wealth = float(cfg.initial_equity)
+    turnover = 0.0
+    for t in range(n_scored):
+        # The decision bar ``t`` must be CLOSED before its order may fill at t+1.
+        guard_order(BarStatus.CLOSED, bar_index=t)
+        target = float(pi[t])
+        traded = abs(target - prev)
+        cost = friction * traded
+        gross = target * float(r[t + 1])
+        net_t = gross - cost
+
+        wealth *= 1.0 + net_t
+        net[t] = net_t
+        realized[t] = target
+        equity[t] = wealth
+        turnover += traded
+        fills.append(
+            Fill(bar_index=t + 1, target_position=target, traded=target - prev, cost=cost)
+        )
+        prev = target
+
+    return PaperBrokerResult(
+        net_returns=net,
+        equity_curve=equity,
+        positions=realized,
+        fills=tuple(fills),
+        turnover=float(turnover),
+        n_bars=int(n_scored),
+        meta={
+            "cost_bps": float(cfg.cost_bps),
+            "slippage_bps": float(cfg.slippage_bps),
+            "initial_position": float(cfg.initial_position),
+            "initial_equity": float(cfg.initial_equity),
+        },
+    )
