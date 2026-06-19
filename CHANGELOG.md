@@ -7,6 +7,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Documentation pass: filled the README **Validation** section with the actual
+  committed metrics from `src/algosystem/artifacts/reference.json` (OOS Sharpe
+  −0.7070 vs. buy-hold −0.0973, DM p 0.1929, deflated Sharpe 0.00323, PBO 0.8626,
+  `n_effective_trials` 7, `backtest_live_parity_max_diff` 0.0, `system_has_edge`
+  False) and a correctness-gates table (parity oracle `1e-10`, leaky negative
+  control caught, DSR `1e-10`, DM, PBO/CSCV, causal-signal/next-bar-fill,
+  bar-finality, the `learnable_trend` / `regime_trend` sanity, the honest-null).
+  Added a **Reproduce** block (lean install + `backtest`/`paper`/`compare` CLI +
+  the `ruff`/`mypy`/`pytest` gates), tightened **Limitations** (SIMULATED execution
+  / no broker key, synthetic default, single-asset, idealized fills, PIT
+  survivorship).
+- Added `docs/DESIGN.md` (goals / non-goals, the pipeline diagram, the module map,
+  the key invariants) and `docs/decisions/` ADRs: causal-signal-next-bar-fill,
+  backtest-live-parity-oracle, bar-finality-guard, dsr-confidence-gate, and
+  simulated-execution.
 - Wired the full serve-time pipeline in `serve.run_system`: synthetic bars -> causal
   signal -> vectorized backtest + simulated paper-broker replay -> the backtest<->live
   PARITY ORACLE (asserted to `1e-10`) -> OOS metrics + Diebold-Mariano + Deflated

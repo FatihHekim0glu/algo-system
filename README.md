@@ -30,6 +30,10 @@ broker** (there is no Alpaca / broker connection and no broker key).
 - **Is not:** an alpha claim, a live trading system, or a torch/ML serving stack.
   Pure numpy / scipy / statsmodels throughout.
 
+For the architecture, module map, and the recorded decisions behind each guard, see
+[`docs/DESIGN.md`](docs/DESIGN.md) and the ADRs under
+[`docs/decisions/`](docs/decisions/).
+
 ## Causality & correctness guards
 
 | Guard | What it enforces |
@@ -42,24 +46,48 @@ broker** (there is no Alpaca / broker connection and no broker key).
 
 ## Validation
 
-On the deployed default (`ma_crossover` 10/50, `cost_bps=5`, `slippage_bps=2`,
-`seed=7`, 2000 synthetic bars) the committed reference summary is the honest NULL:
-`oos_sharpe ≈ −0.71` vs. `buyhold_sharpe ≈ −0.10`, `dm_pvalue ≈ 0.19` (insignificant),
-`deflated_sharpe ≈ 0.003` (far below the `0.95` confidence gate), `pbo ≈ 0.86`,
-**`backtest_live_parity_max_diff = 0.0`**, `bar_finality_ok = True`,
-**`system_has_edge = False`**. (Regenerate with `python scripts/build_reference.py`.)
+These are the committed reference metrics from
+[`src/algosystem/artifacts/reference.json`](src/algosystem/artifacts/reference.json),
+the deployed-default summary the request path serves verbatim. The configuration is
+`ma_crossover` 10/50, `cost_bps=5`, `slippage_bps=2`, `seed=7`, 2000 synthetic bars.
+(Regenerate with `python scripts/build_reference.py`.)
 
-| Check | Status | Tolerance / criterion |
+| Metric | Value | Reading |
 | --- | --- | --- |
-| Backtest↔live equity parity (the oracle) | PASS | `max-diff = 0.0` ≤ `1e-10` |
-| Leaky-backtester negative control caught | PASS | parity FAILS (`ParityError`, integration + unit) |
-| DSR vs. `dsr.py` reference | PASS | `1e-10` |
-| Diebold-Mariano correctness | PASS | hand reference + HAC long-run variance |
-| PBO / CSCV vs. reference | PASS | CSCV combinatorial reference |
+| OOS net Sharpe (system) | **−0.7070** | below buy-and-hold; no edge |
+| Buy-and-hold Sharpe | −0.0973 | the benchmark |
+| Diebold-Mariano p vs. buy-hold | 0.1929 | insignificant (≥ `0.05`) — DM gate fails |
+| Deflated Sharpe (DSR) | 0.00323 | a probability; far below the `1 − α = 0.95` gate |
+| PBO (CSCV) | 0.8626 | ≥ `0.5` — overfitting gate fails |
+| Effective trials (DSR multiplicity) | 7 | #signals × #param configs |
+| Max drawdown | −69.1% | — |
+| Turnover | 131.0 | — |
+| **`backtest_live_parity_max_diff`** | **0.0** | backtest == live to the cent |
+| `bar_finality_ok` | True | no order off an unclosed bar |
+| **`system_has_edge`** | **False** | the honest NULL verdict |
+
+All three edge gates fail independently (DM insignificant, DSR `0.003 ≤ 0.95`,
+PBO `0.86 ≥ 0.5`), so the PURE `system_has_edge` verdict is `False`. The deliverable
+is the load-bearing parity (`max-diff = 0.0`), not the strategy.
+
+### Correctness gates
+
+Every gate below is enforced by a test in the partitioned `tests/` suite and is
+green in CI. These — not any return number — are the product.
+
+| Gate | Status | Criterion |
+| --- | --- | --- |
+| Backtest↔live equity **parity oracle** | PASS | `max-diff = 0.0` ≤ `1e-10` for any signal/param (`tests/parity`, Hypothesis property) |
+| **Leaky negative control** caught | PASS | the deliberately-leaky backtester FAILS parity (`ParityError`; unit + integration) |
+| **DSR** vs. `dsr.py` reference | PASS | agrees to `1e-10` |
+| **Diebold-Mariano** correctness | PASS | hand reference + Newey-West HAC long-run variance |
+| **PBO / CSCV** vs. reference | PASS | CSCV combinatorial reference |
+| **Causal signal + next-bar fill** | PASS | perturbing the forming/future bar leaves the order at `t` unchanged (Hypothesis) |
+| **Bar-finality guard** | PASS | a partial / unclosed bar emits no order |
 | Sharpe / drawdown / turnover | PASS | hand references |
-| `regime_trend` SANITY (long/short pipeline beats buy-hold, DM-significant) | PASS | `dm_pvalue < 0.05`, robust across seeds |
-| Honest-null (`system_has_edge = False` after costs + DSR + PBO) | PASS | deterministic across `PYTHONHASHSEED` |
-| Coverage | PASS | `86%` ≥ `85%` |
+| `learnable_trend` / `regime_trend` SANITY | PASS | a tradeable trend IS captured (`regime_trend`: `dm_pvalue ≈ 1e-5`, beats buy-hold) |
+| **Honest-null** | PASS | `system_has_edge = False` after costs + DSR + PBO; deterministic across `PYTHONHASHSEED` |
+| Coverage | PASS | `86.31%` ≥ `85%`; ruff + strict-mypy clean |
 
 The SANITY check uses a **directional regime-trend** DGP (`regime_trend_bars`:
 alternating persistent up / down trends): the long/short MA-crossover flips short
@@ -70,27 +98,57 @@ machinery detects a real, tradeable edge, so the honest null is honest, not vacu
 optimal on, so a long/short trend-follower cannot beat it there — documented in the
 sanity suite for contrast.)
 
-## Quickstart
+## Reproduce
+
+Lean install (no torch / onnx / onnxruntime / sklearn — only `[data,viz,dev]`):
 
 ```bash
 uv venv
 uv pip install -e '.[data,viz,dev]'
-uv run pytest -q -m "not slow"
+```
+
+Run the pipeline three ways via the Typer CLI — all on the synthetic default,
+offline, never training:
+
+```bash
+# Vectorized purged walk-forward backtest: OOS metrics + the verdict
+algo-system backtest --signal ma_crossover --fast 10 --slow 50 --cost-bps 5 --slippage-bps 2 --seed 7
+
+# Simulated bar-by-bar paper-broker replay (next-bar-open fills): the "live" path
+algo-system paper --signal ma_crossover --fast 10 --slow 50
+
+# Run BOTH and print the parity max-diff + DM/DSR/PBO + the PURE verdict
+algo-system compare --signal ma_crossover --fast 10 --slow 50
+```
+
+Regenerate the committed reference artifact:
+
+```bash
+python scripts/build_reference.py
+```
+
+Run the gates exactly as CI does:
+
+```bash
+ruff check src tests          # lint
+mypy src                      # strict type-check (clean)
+pytest -q -m "not slow" --cov=algosystem --cov-report=term --cov-fail-under=85
 ```
 
 ## Limitations
 
 - **SIMULATED execution, NOT a live broker.** The paper broker is an internal
-  cost+slippage simulator; there is no live Alpaca / broker connection and no
-  broker key.
-- **Synthetic default.** The deployed default runs on a synthetic OHLC bar process
-  designed so the honest null holds; it is not historical market data.
-- **Single-asset.** One instrument at a time; no cross-sectional or portfolio
-  effects.
+  cost+slippage simulator that replays bars; there is **no** live Alpaca / broker
+  connection and **no broker key**. Nothing here places a real order.
+- **Synthetic default.** The deployed request path runs on a synthetic OHLC bar
+  process constructed so the simple signals have no exploitable edge net of costs
+  (the honest null holds); it is not historical market data.
+- **Single-asset.** One instrument at a time; no cross-sectional, portfolio, or
+  hedging effects.
 - **Idealized fills.** Next-bar-open fills with fixed per-side basis-point costs and
-  slippage; no partial fills, no market impact, no queue position.
-- **PIT / survivorship.** The Polygon-PIT path is point-in-time but does not model
-  delisting / survivorship beyond the provider's coverage.
+  slippage; no partial fills, no market impact, no queue position, no latency.
+- **PIT / survivorship.** The Polygon-PIT offline path is point-in-time but does not
+  model delisting / survivorship beyond the provider's coverage.
 
 ## References
 
