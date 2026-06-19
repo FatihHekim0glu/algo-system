@@ -1,9 +1,5 @@
 """Plotly figure builders (LAZY plotly): backtest-vs-live equity overlay + drawdown.
 
-[TYPED STUB — signatures, docstrings, and the ``FigureDict`` shape are final; the
-figure-construction bodies raise :class:`NotImplementedError` for a sequential
-author to fill.]
-
 Each builder returns a plain ``dict`` shaped ``{"data": [...], "layout": {...}}`` —
 the same JSON shape the FastAPI layer serializes and the Next.js ``PlotlyChart``
 component renders — so the figures cross the API boundary with no Plotly object
@@ -132,8 +128,6 @@ def equity_overlay_figure(
     ------
     ValidationError
         If the curves are empty or length-mismatched.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     bt = _finite_1d(backtest_equity, name="backtest_equity")
     live = _finite_1d(live_equity, name="live_equity")
@@ -218,8 +212,6 @@ def drawdown_figure(
     ------
     ValidationError
         If ``net_returns`` is empty or non-finite.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     arr = _finite_1d(net_returns, name="net_returns")
 

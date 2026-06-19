@@ -304,6 +304,86 @@ def learnable_trend_bars(
     return BarPath(bars=bars, regime_labels=tuple([0] * n_obs), kind="learnable_trend")
 
 
+def regime_trend_bars(
+    *,
+    n_obs: int = DEFAULT_N_OBS,
+    seed: int = 7,
+    block: int = 300,
+    drift: float = 0.002,
+    vol: float = 0.01,
+    intrabar_range_bps: float = 30.0,
+    start: str = "2010-01-01",
+) -> BarPath:
+    r"""Generate a DIRECTIONAL regime-trend OHLC bar panel (the tradeable SANITY fixture).
+
+    The close log-return at bar ``t`` is :math:`s_t\,\mu + \sigma\,\varepsilon_t`
+    where the sign ``s_t in {+1, -1}`` flips every ``block`` bars, so the path
+    alternates between persistent UP-trend and persistent DOWN-trend regimes. Unlike
+    the pure monotonic :func:`learnable_trend_bars` (on which buy-and-hold IS the
+    optimal exposure and a long/short trend-follower can never win), this directional
+    regime structure is one a long/short MA-crossover SHOULD beat buy-and-hold on,
+    DM-significant net of costs: the crossover flips short through the down-trends
+    that drag a static long position down. This is the SANITY DGP that proves the
+    FULL long/short pipeline (signal -> backtest -> DM-vs-buy-hold) captures a real,
+    tradeable edge — so the honest null on the no-edge DGPs is honest, not vacuous.
+
+    The intrabar high/low envelope is drawn exactly as in :func:`gbm_regime_bars` so
+    the OHLC invariants ``low <= {open, close} <= high`` hold by construction.
+
+    Parameters
+    ----------
+    n_obs:
+        Number of daily bars.
+    seed:
+        Master RNG seed.
+    block:
+        Bars per directional regime block (the trend persists this long before the
+        sign flips); ``>= 1``.
+    drift:
+        The per-bar trend magnitude (positive; signed by the regime each block).
+    vol:
+        The per-bar close volatility.
+    intrabar_range_bps:
+        Magnitude (bps) of the seeded intrabar high/low envelope.
+    start:
+        First business-day date.
+
+    Returns
+    -------
+    BarPath
+        The directional regime-trend OHLC bar panel with per-bar regime labels
+        (``0`` in an up block, ``1`` in a down block).
+
+    Raises
+    ------
+    ValidationError
+        If ``n_obs < 2``, ``block < 1``, or ``vol < 0``.
+    """
+    if n_obs < 2:
+        raise ValidationError(f"regime_trend_bars: n_obs must be >= 2, got {n_obs}.")
+    if block < 1:
+        raise ValidationError(f"regime_trend_bars: block must be >= 1, got {block}.")
+    if vol < 0.0:
+        raise ValidationError(f"regime_trend_bars: vol must be >= 0, got {vol}.")
+    if intrabar_range_bps < 0.0:
+        raise ValidationError(
+            f"regime_trend_bars: intrabar_range_bps must be >= 0, got {intrabar_range_bps}."
+        )
+
+    gen = make_rng(seed)
+    # Alternating directional regime sign: + for the first block of bars, - for the
+    # next, and so on. A long/short trend-follower SHOULD profit from flipping with
+    # the sign, which a static buy-and-hold cannot do.
+    block_idx = np.arange(n_obs) // block
+    signs = np.where(block_idx % 2 == 0, 1.0, -1.0)
+    log_returns = (signs * drift + vol * gen.standard_normal(n_obs)).astype("float64")
+    bars = _bars_from_log_returns(
+        log_returns, gen, intrabar_range_bps=intrabar_range_bps, start=start
+    )
+    labels = tuple(int(x % 2) for x in block_idx)
+    return BarPath(bars=bars, regime_labels=labels, kind="regime_trend")
+
+
 def pure_noise_bars(
     *,
     n_obs: int = DEFAULT_N_OBS,

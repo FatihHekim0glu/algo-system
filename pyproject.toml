@@ -81,6 +81,12 @@ algo-system = "algosystem.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/algosystem"]
+# The committed reference artifact (and the py.typed marker) are package DATA, not
+# Python modules, so they are force-included in the wheel alongside the source.
+artifacts = [
+    "src/algosystem/artifacts/reference.json",
+    "src/algosystem/py.typed",
+]
 
 [tool.hatch.build.targets.sdist]
 include = [

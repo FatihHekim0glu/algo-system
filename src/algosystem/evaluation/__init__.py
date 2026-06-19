@@ -4,9 +4,8 @@ Exposes the honest-statistics layer used to judge the strategy out-of-sample net
 costs:
 
 - :mod:`algosystem.evaluation.metrics` — OOS net Sharpe, max drawdown, turnover, net
-  PnL (typed stub);
-- :mod:`algosystem.evaluation.pbo` — Probability of Backtest Overfitting via CSCV
-  (typed stub);
+  PnL;
+- :mod:`algosystem.evaluation.pbo` — Probability of Backtest Overfitting via CSCV;
 - :mod:`algosystem.evaluation.diebold_mariano` — the DM test of the system-vs-buy-hold
   per-bar net-return differential (fully implemented PURE kernel);
 - :mod:`algosystem.evaluation.dsr` — the Probabilistic / Deflated Sharpe ratios

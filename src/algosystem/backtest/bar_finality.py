@@ -1,9 +1,5 @@
 """Bar-finality guard: an order may only be triggered by a CLOSED bar.
 
-[TYPED STUB — signatures, docstrings, and the frozen ``BarStatus`` enum are final;
-the guard bodies raise :class:`NotImplementedError` for a sequential author to
-fill.]
-
 THE ONLY-ACT-ON-CLOSED-BARS RULE. The signal at bar ``t`` may read and act on a
 bar ONLY once that bar is FINAL (closed); a partial / forming bar can NEVER trigger
 an order, because its close is not yet known and acting on it would be a causality

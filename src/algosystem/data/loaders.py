@@ -27,7 +27,9 @@ from algosystem._exceptions import AlgoSystemError, ValidationError
 from algosystem.data import DataSource, compute_returns
 
 #: The synthetic process kinds routed by :func:`synthetic_default_bars`.
-SYNTHETIC_KINDS: frozenset[str] = frozenset({"gbm_regime", "learnable_trend", "pure_noise"})
+SYNTHETIC_KINDS: frozenset[str] = frozenset(
+    {"gbm_regime", "learnable_trend", "regime_trend", "pure_noise"}
+)
 
 #: Canonical OHLC column order for the bar panel these loaders emit.
 _OHLC_COLUMNS: tuple[str, ...] = ("open", "high", "low", "close")
@@ -142,10 +144,11 @@ def synthetic_default_bars(
     """Build the deployed-default synthetic OHLC bars + close returns (torch-free, no network).
 
     Routes to the requested synthetic process (``"gbm_regime"`` = the honest-null
-    default, ``"learnable_trend"`` = the sanity fixture, ``"pure_noise"`` = the
-    strict null) and returns the OHLC bars, per-bar close returns, and the
-    ``"synthetic"`` provenance label. The deployed request path uses this — it
-    never needs a key or network.
+    default, ``"learnable_trend"`` = the monotonic-uptrend long/flat sanity fixture,
+    ``"regime_trend"`` = the directional regime-trend the long/short pipeline beats
+    buy-and-hold on, ``"pure_noise"`` = the strict null) and returns the OHLC bars,
+    per-bar close returns, and the ``"synthetic"`` provenance label. The deployed
+    request path uses this — it never needs a key or network.
 
     Parameters
     ----------
@@ -154,7 +157,7 @@ def synthetic_default_bars(
     seed:
         Master RNG seed.
     kind:
-        One of ``{"gbm_regime", "learnable_trend", "pure_noise"}``.
+        One of ``{"gbm_regime", "learnable_trend", "regime_trend", "pure_noise"}``.
 
     Returns
     -------
@@ -179,12 +182,15 @@ def synthetic_default_bars(
         gbm_regime_bars,
         learnable_trend_bars,
         pure_noise_bars,
+        regime_trend_bars,
     )
 
     if kind == "gbm_regime":
         path = gbm_regime_bars(n_obs=n_obs, seed=seed)
     elif kind == "learnable_trend":
         path = learnable_trend_bars(n_obs=n_obs, seed=seed)
+    elif kind == "regime_trend":
+        path = regime_trend_bars(n_obs=n_obs, seed=seed)
     else:  # "pure_noise"
         path = pure_noise_bars(n_obs=n_obs, seed=seed)
 

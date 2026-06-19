@@ -22,12 +22,14 @@ from algosystem.data.synthetic import (
     gbm_regime_bars,
     learnable_trend_bars,
     pure_noise_bars,
+    regime_trend_bars,
 )
 
-_GENERATORS = (gbm_regime_bars, learnable_trend_bars, pure_noise_bars)
+_GENERATORS = (gbm_regime_bars, learnable_trend_bars, regime_trend_bars, pure_noise_bars)
 _KINDS = {
     gbm_regime_bars: "gbm_regime",
     learnable_trend_bars: "learnable_trend",
+    regime_trend_bars: "regime_trend",
     pure_noise_bars: "pure_noise",
 }
 
@@ -191,6 +193,30 @@ def test_nonregime_paths_have_single_nominal_regime(generate: object) -> None:
     """The non-regime processes carry a single nominal regime label."""
     path = generate(n_obs=300, seed=7)  # type: ignore[operator]
     assert set(path.regime_labels) == {0}
+
+
+@pytest.mark.unit
+def test_regime_trend_labels_alternate_by_block() -> None:
+    """regime_trend_bars flips its directional regime label every ``block`` bars."""
+    block = 50
+    path = regime_trend_bars(n_obs=200, seed=7, block=block)
+    labels = path.regime_labels
+    assert set(labels) == {0, 1}  # alternating up / down blocks.
+    # The first block is the up regime (label 0), the second the down regime (1).
+    assert labels[0] == 0
+    assert labels[block] == 1
+    assert labels[2 * block] == 0
+
+
+@pytest.mark.unit
+def test_regime_trend_rejects_bad_block_and_negative_vol() -> None:
+    """regime_trend_bars rejects block < 1, negative vol, and negative intrabar range."""
+    with pytest.raises(ValidationError, match="block"):
+        regime_trend_bars(n_obs=100, block=0)
+    with pytest.raises(ValidationError, match="vol"):
+        regime_trend_bars(n_obs=100, vol=-0.01)
+    with pytest.raises(ValidationError, match="intrabar_range_bps"):
+        regime_trend_bars(n_obs=100, intrabar_range_bps=-1.0)
 
 
 # --------------------------------------------------------------------------- #

@@ -1,9 +1,5 @@
 """Parity oracle: vectorized backtest == simulated paper-broker equity to 1e-10.
 
-[TYPED STUB — signatures, docstrings, the ``PARITY_TOL`` constant, and the frozen
-``ParityReport`` are final; the oracle bodies (and the deliberately-leaky negative
-control) raise :class:`NotImplementedError` for a sequential author to fill.]
-
 THE LOAD-BEARING BACKTEST<->LIVE LOOK-AHEAD GUARD. The vectorized backtester
 (:func:`algosystem.backtest.engine.vectorized_backtest`) and the simulated
 bar-by-bar paper-broker replay (:func:`algosystem.execution.paper_broker.replay`)
@@ -111,8 +107,6 @@ def check_parity(
     ------
     ValidationError
         If the inputs are malformed, length-mismatched, or ``tol`` is invalid.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     if tol < 0.0:
         raise ValidationError(f"tol must be >= 0, got {tol!r}.")
@@ -243,8 +237,6 @@ def leaky_vectorized_backtest(
     ------
     ValidationError
         If ``returns`` and ``positions`` lengths are inconsistent.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     if not isinstance(cost_bps, float | int) or cost_bps < 0.0:
         raise ValidationError(f"cost_bps must be >= 0, got {cost_bps!r}.")

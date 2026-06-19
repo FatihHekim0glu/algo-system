@@ -61,6 +61,7 @@ from algosystem.data.synthetic import (
     gbm_regime_bars,
     learnable_trend_bars,
     pure_noise_bars,
+    regime_trend_bars,
 )
 from algosystem.evaluation.diebold_mariano import diebold_mariano, dm_favours_system
 from algosystem.evaluation.dsr import deflated_sharpe_ratio, probabilistic_sharpe_ratio
@@ -165,6 +166,7 @@ __all__ = [
     "probabilistic_sharpe_ratio",
     "probability_of_backtest_overfitting",
     "pure_noise_bars",
+    "regime_trend_bars",
     "replay",
     "run_system",
     "spawn_substreams",

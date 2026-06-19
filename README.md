@@ -42,21 +42,33 @@ broker** (there is no Alpaca / broker connection and no broker key).
 
 ## Validation
 
+On the deployed default (`ma_crossover` 10/50, `cost_bps=5`, `slippage_bps=2`,
+`seed=7`, 2000 synthetic bars) the committed reference summary is the honest NULL:
+`oos_sharpe ≈ −0.71` vs. `buyhold_sharpe ≈ −0.10`, `dm_pvalue ≈ 0.19` (insignificant),
+`deflated_sharpe ≈ 0.003` (far below the `0.95` confidence gate), `pbo ≈ 0.86`,
+**`backtest_live_parity_max_diff = 0.0`**, `bar_finality_ok = True`,
+**`system_has_edge = False`**. (Regenerate with `python scripts/build_reference.py`.)
+
 | Check | Status | Tolerance / criterion |
 | --- | --- | --- |
-| Backtest↔live equity parity (the oracle) | _to be filled_ | `1e-10` |
-| Leaky-backtester negative control caught | _to be filled_ | parity FAILS |
-| DSR vs. `dsr.py` reference | _to be filled_ | `1e-10` |
-| Diebold-Mariano correctness | _to be filled_ | hand reference |
-| PBO / CSCV vs. reference | _to be filled_ | reference |
-| Sharpe / drawdown / turnover | _to be filled_ | hand references |
-| `learnable_trend` SANITY (MA beats buy-hold) | _to be filled_ | the machinery works |
-| Honest-null (`system_has_edge = False` after costs + DSR + PBO) | _to be filled_ | deterministic across `PYTHONHASHSEED` |
-| Coverage | _to be filled_ | `≥ 85%` |
+| Backtest↔live equity parity (the oracle) | PASS | `max-diff = 0.0` ≤ `1e-10` |
+| Leaky-backtester negative control caught | PASS | parity FAILS (`ParityError`, integration + unit) |
+| DSR vs. `dsr.py` reference | PASS | `1e-10` |
+| Diebold-Mariano correctness | PASS | hand reference + HAC long-run variance |
+| PBO / CSCV vs. reference | PASS | CSCV combinatorial reference |
+| Sharpe / drawdown / turnover | PASS | hand references |
+| `regime_trend` SANITY (long/short pipeline beats buy-hold, DM-significant) | PASS | `dm_pvalue < 0.05`, robust across seeds |
+| Honest-null (`system_has_edge = False` after costs + DSR + PBO) | PASS | deterministic across `PYTHONHASHSEED` |
+| Coverage | PASS | `86%` ≥ `85%` |
 
-_(This is a scaffold; the surrounding modules are typed stubs. The PURE honesty
-kernels — DSR, Diebold-Mariano, and the `system_has_edge` verdict — are fully
-implemented and locked by tests.)_
+The SANITY check uses a **directional regime-trend** DGP (`regime_trend_bars`:
+alternating persistent up / down trends): the long/short MA-crossover flips short
+through the down-trends that drag a static buy-and-hold down, so it beats
+buy-and-hold DM-significant (`dm_pvalue ≈ 1e-5`) net of costs — proving the
+machinery detects a real, tradeable edge, so the honest null is honest, not vacuous.
+(A pure monotonic uptrend, `learnable_trend_bars`, is one buy-and-hold itself is
+optimal on, so a long/short trend-follower cannot beat it there — documented in the
+sanity suite for contrast.)
 
 ## Quickstart
 

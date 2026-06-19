@@ -1,9 +1,5 @@
 """Vectorized no-lookahead single-asset backtester (pure numpy; the parity reference).
 
-[TYPED STUB — signatures, docstrings, and the frozen ``BacktestResult`` are final;
-the engine bodies raise :class:`NotImplementedError` for a sequential author to
-fill.]
-
 A fast, fully-vectorized evaluator of a signal's target-position sequence over a
 single-asset return path. For a per-bar position sequence ``pi_t`` and close
 return path ``r_t`` the per-bar net return is
@@ -215,8 +211,6 @@ def vectorized_backtest(
         negative.
     InsufficientDataError
         If there are fewer than two bars (no causal step can be scored).
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     if not np.isfinite(cost_bps) or cost_bps < 0.0:
         raise ValidationError(f"cost_bps must be finite and >= 0, got {cost_bps!r}.")
@@ -308,8 +302,6 @@ def walk_forward_signal_backtest(
         If a cost / window parameter is invalid.
     InsufficientDataError
         If the path is too short for even one train/test split.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     if not np.isfinite(cost_bps) or cost_bps < 0.0:
         raise ValidationError(f"cost_bps must be finite and >= 0, got {cost_bps!r}.")
@@ -409,8 +401,6 @@ def equity_curve(net_returns: FloatArray) -> FloatArray:
     ------
     ValidationError
         If ``net_returns`` is empty or non-finite.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     arr = np.asarray(net_returns, dtype="float64").ravel()
     if arr.size == 0:

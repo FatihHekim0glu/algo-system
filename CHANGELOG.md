@@ -7,6 +7,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Wired the full serve-time pipeline in `serve.run_system`: synthetic bars -> causal
+  signal -> vectorized backtest + simulated paper-broker replay -> the backtest<->live
+  PARITY ORACLE (asserted to `1e-10`) -> OOS metrics + Diebold-Mariano + Deflated
+  Sharpe + PBO/CSCV -> the PURE `system_has_edge` verdict -> the JSON-safe summary +
+  the backtest-vs-live equity overlay + drawdown Plotly figures. The request path is
+  offline-safe and never trains.
+- Added a directional regime-trend synthetic DGP (`data.synthetic.regime_trend_bars`)
+  — the tradeable SANITY fixture the FULL long/short pipeline beats buy-and-hold on,
+  DM-significant net of costs (proving the machinery detects a real edge so the honest
+  null is not vacuous); routed through `synthetic_default_bars` and exported.
+- Precomputed + committed the synthetic reference summary
+  (`src/algosystem/artifacts/reference.json`) holding the deployed-default honest-NULL
+  summary plus the learnable_trend / regime_trend sanity numbers and the pure_noise
+  honest-null numbers, regenerable via `scripts/build_reference.py`.
+- Integration + regression suites: the end-to-end pipeline (no network), the
+  honest-null regression (`system_has_edge = False`, deterministic across
+  `PYTHONHASHSEED`), the regime-trend SANITY (the system DOES beat buy-hold), the
+  leaky-backtester integration negative control (the parity oracle CATCHES it), and
+  the reference-artifact lock test.
 - Scaffolded the `algosystem` src-layout package (import-pure, typed, `py.typed`).
 - Reused infrastructure verbatim from the HRP repo (renamed `hrp` -> `algosystem`):
   `_constants`, `_rng`, `_validation`, `py.typed`, `evaluation/dsr.py`,

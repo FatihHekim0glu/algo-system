@@ -1,9 +1,5 @@
 """SIMULATED bar-by-bar paper broker — next-bar-open fills + costs + slippage (the "live" path).
 
-[TYPED STUB — signatures, docstrings, the frozen config + fill + result dataclasses
-are final; the broker bodies raise :class:`NotImplementedError` for a sequential
-author to fill.]
-
 A SIMULATED bar-by-bar execution engine that replays a signal's target-position
 sequence the way a live trader would, but against historical bars with simulated
 friction — NEVER a live broker (there is no Alpaca / broker connection and no
@@ -178,8 +174,6 @@ def replay(
     ------
     ValidationError
         If ``returns`` and ``positions`` lengths are inconsistent.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     cfg = config if config is not None else PaperBrokerConfig()
     if not isinstance(cfg, PaperBrokerConfig):  # pragma: no cover - defensive type guard
