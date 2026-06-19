@@ -7,3 +7,19 @@ future bar). Importing this subpackage has no side effects.
 """
 
 from __future__ import annotations
+
+from algosystem.signals.library import (
+    SignalSpec,
+    build_signal,
+    flat,
+    ma_crossover,
+    momentum,
+)
+
+__all__ = [
+    "SignalSpec",
+    "build_signal",
+    "flat",
+    "ma_crossover",
+    "momentum",
+]

@@ -1,9 +1,5 @@
 """Pure, STRICTLY CAUSAL signal library — target positions from closed bars only.
 
-[TYPED STUB — signatures, docstrings, the frozen ``SignalSpec`` config, and the
-parameter-grid contract are final; the signal bodies raise
-:class:`NotImplementedError` for a sequential author to fill.]
-
 Each signal is a PURE function mapping the bar history up to and INCLUDING the
 CLOSED bar ``t`` to a target position for bar ``t+1``. THE CAUSALITY CONTRACT:
 
@@ -31,10 +27,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from algosystem._exceptions import ValidationError
 from algosystem._typing import FloatArray
+from algosystem._validation import ensure_series
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,14 +95,33 @@ def ma_crossover(close: pd.Series, *, fast: int = 10, slow: int = 50) -> FloatAr
     ------
     ValidationError
         If ``fast < 1``, ``slow <= fast``, or ``close`` is malformed.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     if fast < 1:
         raise ValidationError(f"ma_crossover: fast must be >= 1, got {fast}.")
     if slow <= fast:
         raise ValidationError(f"ma_crossover: slow ({slow}) must be > fast ({fast}).")
-    raise NotImplementedError("ma_crossover: typed stub — body to be authored.")
+
+    series = ensure_series(close, name="close")
+
+    # Trailing simple moving averages over the CLOSED history <= t. With
+    # ``min_periods`` equal to each window, every average at bar ``t`` reads only
+    # ``close[t - window + 1 : t + 1]`` (closed bars <= t) and is NaN until the
+    # window is full — never a future or forming bar. This is what makes the
+    # signal STRICTLY CAUSAL.
+    sma_fast = series.rolling(window=fast, min_periods=fast).mean()
+    sma_slow = series.rolling(window=slow, min_periods=slow).mean()
+
+    positions = np.zeros(series.size, dtype="float64")
+    fast_arr = sma_fast.to_numpy(dtype="float64")
+    slow_arr = sma_slow.to_numpy(dtype="float64")
+
+    # Only score bars where BOTH averages are defined (the slow window is full).
+    # Long (+1) when the fast SMA is strictly above the slow SMA, else short (-1);
+    # bars in the warm-up (before the slow window fills) stay flat (0).
+    ready = np.isfinite(fast_arr) & np.isfinite(slow_arr)
+    positions[ready & (fast_arr > slow_arr)] = 1.0
+    positions[ready & (fast_arr <= slow_arr)] = -1.0
+    return positions
 
 
 def momentum(close: pd.Series, *, lookback: int = 20) -> FloatArray:
@@ -134,12 +151,28 @@ def momentum(close: pd.Series, *, lookback: int = 20) -> FloatArray:
     ------
     ValidationError
         If ``lookback < 1`` or ``close`` is malformed.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     if lookback < 1:
         raise ValidationError(f"momentum: lookback must be >= 1, got {lookback}.")
-    raise NotImplementedError("momentum: typed stub — body to be authored.")
+
+    series = ensure_series(close, name="close")
+    close_arr = series.to_numpy(dtype="float64")
+    n = close_arr.size
+
+    positions = np.zeros(n, dtype="float64")
+    if n <= lookback:
+        # Not a single full lookback window: every bar stays flat (warm-up).
+        return positions
+
+    # Trailing ``lookback``-bar simple return ``close_t / close_{t-lookback} - 1``
+    # for every bar ``t >= lookback`` — reads only CLOSED bars <= t (the current
+    # close and the close ``lookback`` bars back), never a future/forming bar.
+    trailing_return = close_arr[lookback:] / close_arr[:-lookback] - 1.0
+    scored = positions[lookback:]
+    scored[trailing_return > 0.0] = 1.0
+    scored[trailing_return <= 0.0] = -1.0
+    positions[lookback:] = scored
+    return positions
 
 
 def flat(close: pd.Series) -> FloatArray:
@@ -162,10 +195,9 @@ def flat(close: pd.Series) -> FloatArray:
     ------
     ValidationError
         If ``close`` is malformed.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    raise NotImplementedError("flat: typed stub — body to be authored.")
+    series = ensure_series(close, name="close")
+    return np.zeros(series.size, dtype="float64")
 
 
 def build_signal(spec: SignalSpec, close: pd.Series) -> FloatArray:
@@ -189,8 +221,16 @@ def build_signal(spec: SignalSpec, close: pd.Series) -> FloatArray:
     Raises
     ------
     ValidationError
-        If ``spec.name`` is unknown.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
+        If ``spec.name`` is unknown or ``flat`` is given parameters.
     """
-    raise NotImplementedError("build_signal: typed stub — body to be authored.")
+    if spec.name == "ma_crossover":
+        return ma_crossover(close, **spec.params)
+    if spec.name == "momentum":
+        return momentum(close, **spec.params)
+    if spec.name == "flat":
+        if spec.params:
+            raise ValidationError(f"build_signal: 'flat' takes no parameters, got {spec.params!r}.")
+        return flat(close)
+    # Unreachable: SignalSpec.__post_init__ already restricts ``name`` to the known
+    # set; kept as a defensive guard for an externally-mutated spec.
+    raise ValidationError(f"build_signal: unknown signal {spec.name!r}.")
