@@ -1,0 +1,101 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "algo-system: A leakage-free single-asset algo trading system with a backtest<->live parity oracle (honest NULL)"
+abstract: >-
+  A pure, typed Python algo trading system: a strictly-causal signal
+  (MA-crossover / momentum) drives a purged walk-forward, no-lookahead vectorized
+  backtest and a SIMULATED bar-by-bar paper-broker execution engine (next-bar-open
+  fills + transaction costs + slippage). A backtest-vs-live parity oracle asserts
+  the two equity curves agree to 1e-10 (the load-bearing look-ahead catch) and a
+  bar-finality guard prevents acting on an unclosed bar. The strategy is judged
+  honestly out-of-sample net of costs with a Diebold-Mariano test versus
+  buy-and-hold, a Deflated-Sharpe correction (counting the full #signals x #param
+  multiplicity), and a Probability-of-Backtest-Overfitting (PBO/CSCV) check, behind
+  a PURE system_has_edge verdict. The documented result is that the simple signals
+  show no robust out-of-sample edge after costs. Execution is SIMULATED, never a
+  live broker.
+type: software
+version: 0.1.0
+date-released: "2026-06-19"
+license: MIT
+repository-code: "https://github.com/FatihHekim0glu/algo-system"
+url: "https://fatihhekimoglu.com"
+authors:
+  - family-names: "FatihHekim0glu"
+keywords:
+  - algorithmic-trading
+  - backtesting
+  - execution
+  - paper-broker
+  - parity-oracle
+  - overfitting
+  - honest-null
+  - leakage-free
+  - diebold-mariano
+  - deflated-sharpe
+  - pbo
+references:
+  - type: article
+    title: "The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting, and Non-Normality"
+    authors:
+      - family-names: "Bailey"
+        given-names: "David H."
+      - family-names: "López de Prado"
+        given-names: "Marcos"
+    journal: "Journal of Portfolio Management"
+    year: 2014
+    volume: "40"
+    issue: "5"
+    start: 94
+    end: 107
+  - type: article
+    title: "The Probability of Backtest Overfitting"
+    authors:
+      - family-names: "Bailey"
+        given-names: "David H."
+      - family-names: "Borwein"
+        given-names: "Jonathan M."
+      - family-names: "López de Prado"
+        given-names: "Marcos"
+      - family-names: "Zhu"
+        given-names: "Qiji Jim"
+    journal: "Journal of Computational Finance"
+    year: 2017
+    volume: "20"
+    issue: "4"
+    start: 39
+    end: 69
+  - type: book
+    title: "Advances in Financial Machine Learning"
+    authors:
+      - family-names: "López de Prado"
+        given-names: "Marcos"
+    publisher:
+      name: "Wiley"
+    year: 2018
+  - type: article
+    title: "Comparing Predictive Accuracy"
+    authors:
+      - family-names: "Diebold"
+        given-names: "Francis X."
+      - family-names: "Mariano"
+        given-names: "Roberto S."
+    journal: "Journal of Business & Economic Statistics"
+    year: 1995
+    volume: "13"
+    issue: "3"
+    start: 253
+    end: 263
+  - type: article
+    title: "A Simple, Positive Semi-Definite, Heteroskedasticity and Autocorrelation Consistent Covariance Matrix"
+    authors:
+      - family-names: "Newey"
+        given-names: "Whitney K."
+      - family-names: "West"
+        given-names: "Kenneth D."
+    journal: "Econometrica"
+    year: 1987
+    volume: "55"
+    issue: "3"
+    start: 703
+    end: 708
