@@ -33,8 +33,86 @@ from typing import Any
 
 import numpy as np
 
-from algosystem._exceptions import ValidationError
+from algosystem._exceptions import InsufficientDataError, ValidationError
 from algosystem._typing import FloatArray, PositionSequence, ReturnSeries
+
+
+def _as_float_array(data: object, *, name: str) -> FloatArray:
+    """Coerce ``data`` to a finite, 1-D float64 array (the parity-exact ingest).
+
+    The vectorized backtester and the simulated paper broker MUST ingest their
+    inputs identically, so this single helper is the one place ``returns`` and
+    ``positions`` are flattened to ``float64`` and checked for finiteness. Any
+    NaN/Inf would make the two equity curves diverge silently, so they are
+    rejected up front.
+
+    Parameters
+    ----------
+    data:
+        A 1-D array-like (Series, ndarray, or sequence).
+    name:
+        Human-readable label used in error messages.
+
+    Returns
+    -------
+    FloatArray
+        A contiguous 1-D ``float64`` copy of ``data``.
+
+    Raises
+    ------
+    ValidationError
+        If ``data`` is not 1-dimensional or contains non-finite values.
+    """
+    arr = np.asarray(data, dtype="float64").ravel()
+    if arr.ndim != 1:  # pragma: no cover - ravel always yields ndim==1
+        raise ValidationError(f"{name} must be 1-dimensional.")
+    if not np.isfinite(arr).all():
+        raise ValidationError(f"{name} contains non-finite values.")
+    return arr
+
+
+def _score_positions(
+    returns: FloatArray,
+    positions: FloatArray,
+    *,
+    friction_bps: float,
+    initial_position: float,
+) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]:
+    r"""Compute the per-bar applied-position/gross/cost/net/traded arrays (core kernel).
+
+    The single, shared accounting kernel behind the vectorized backtest. With
+    ``N`` input bars there are ``N - 1`` SCORED bars (the last position has no
+    next-bar return to earn). For each scored index ``t`` in ``0 .. N - 2``:
+
+    - gross return ``g_t = pi_t * r_{t+1}`` (the position decided at the close of
+      bar ``t`` earns the NEXT bar's return — strictly causal, the order fills at
+      bar ``t+1``'s OPEN, never the same bar's close);
+    - cost ``c_t = friction/1e4 * |pi_t - pi_{t-1}|`` with ``pi_{-1}`` taken as
+      ``initial_position`` (the trade is charged on the position CHANGE);
+    - net return ``net_t = g_t - c_t``.
+
+    Returns the ``(applied_positions, gross, costs, net, traded)`` arrays, each of
+    length ``N - 1`` and aligned to the scored bars. This is exactly the
+    accounting the simulated paper broker reproduces bar by bar, which is why the
+    two equity curves match to ``1e-10`` (the parity oracle).
+    """
+    n = positions.size
+    # Applied positions for the N-1 scored bars: pi_0 .. pi_{N-2} (the final
+    # position pi_{N-1} has no t+1 return and is dropped).
+    applied = positions[: n - 1].copy()
+
+    # Gross return earned over the NEXT bar (strictly causal next-bar fill).
+    gross = applied * returns[1:n]
+
+    # Turnover charge on |pi_t - pi_{t-1}| with pi_{-1} = initial_position.
+    prev = np.empty_like(applied)
+    prev[0] = initial_position
+    prev[1:] = applied[:-1]
+    traded = np.abs(applied - prev)
+    costs = (friction_bps / 1e4) * traded
+
+    net = gross - costs
+    return applied, gross, costs, net, traded
 
 
 def _safe_float(value: object) -> float | None:
@@ -146,7 +224,38 @@ def vectorized_backtest(
         raise ValidationError(f"slippage_bps must be finite and >= 0, got {slippage_bps!r}.")
     if not np.isfinite(initial_position):
         raise ValidationError(f"initial_position must be finite, got {initial_position!r}.")
-    raise NotImplementedError("vectorized_backtest: typed stub — body to be authored.")
+
+    r = _as_float_array(returns, name="returns")
+    pi = _as_float_array(positions, name="positions")
+    if r.size != pi.size:
+        raise ValidationError(
+            f"returns and positions must have the same length, got "
+            f"{r.size} and {pi.size}."
+        )
+    if r.size < 2:
+        raise InsufficientDataError(
+            f"vectorized_backtest needs at least 2 bars to score one causal step, got {r.size}."
+        )
+
+    friction_bps = float(cost_bps) + float(slippage_bps)
+    applied, gross, costs, net, traded = _score_positions(
+        r, pi, friction_bps=friction_bps, initial_position=float(initial_position)
+    )
+
+    return BacktestResult(
+        net_returns=net,
+        gross_returns=gross,
+        equity_curve=equity_curve(net),
+        positions=applied,
+        turnover=float(np.sum(traded)),
+        costs=costs,
+        n_bars=int(net.size),
+        meta={
+            "cost_bps": float(cost_bps),
+            "slippage_bps": float(slippage_bps),
+            "initial_position": float(initial_position),
+        },
+    )
 
 
 def walk_forward_signal_backtest(
@@ -215,7 +324,72 @@ def walk_forward_signal_backtest(
         raise ValidationError(
             f"purge and embargo must be >= 0, got purge={purge}, embargo={embargo}."
         )
-    raise NotImplementedError("walk_forward_signal_backtest: typed stub — body to be authored.")
+
+    r = _as_float_array(returns, name="returns")
+    pi = _as_float_array(positions, name="positions")
+    if r.size != pi.size:
+        raise ValidationError(
+            f"returns and positions must have the same length, got {r.size} and {pi.size}."
+        )
+
+    # Score the full path ONCE with the strictly-causal next-bar kernel; the
+    # walk-forward then selects which scored bars are out-of-sample. Scoring on
+    # the full path keeps each scored bar's friction identical to a stand-alone
+    # backtest, so the concatenated OOS slice still satisfies parity.
+    friction_bps = float(cost_bps) + float(slippage_bps)
+    n_scored = r.size - 1  # one causal step per (t -> t+1) pair.
+
+    # PURGE + EMBARGO geometry (mirrors hrp-portfolio walk_forward): the first OOS
+    # test window starts a ``train_window`` in, plus a ``purge`` boundary gap and
+    # an ``embargo`` (= the return horizon) gap, so no position applied to an OOS
+    # return was decided on a bar inside the embargoed/purged boundary. OOS test
+    # windows of length ``test_window`` then step forward by ``test_window``.
+    gap = purge + embargo
+    first_test = train_window + gap
+    if first_test >= n_scored:
+        raise InsufficientDataError(
+            f"walk_forward_signal_backtest: path has {r.size} bar(s) ({n_scored} scored); "
+            f"need more than {first_test} scored bars for at least one train/test split "
+            f"(train_window={train_window}, purge={purge}, embargo={embargo})."
+        )
+
+    oos_index: list[int] = []
+    start = first_test
+    while start < n_scored:
+        stop = min(start + test_window, n_scored)
+        oos_index.extend(range(start, stop))
+        start += test_window
+
+    applied_full, gross_full, costs_full, net_full, traded_full = _score_positions(
+        r, pi, friction_bps=friction_bps, initial_position=0.0
+    )
+
+    idx = np.asarray(oos_index, dtype="int64")
+    applied = applied_full[idx]
+    gross = gross_full[idx]
+    costs = costs_full[idx]
+    net = net_full[idx]
+    traded = traded_full[idx]
+
+    return BacktestResult(
+        net_returns=net,
+        gross_returns=gross,
+        equity_curve=equity_curve(net),
+        positions=applied,
+        turnover=float(np.sum(traded)),
+        costs=costs,
+        n_bars=int(net.size),
+        meta={
+            "cost_bps": float(cost_bps),
+            "slippage_bps": float(slippage_bps),
+            "train_window": int(train_window),
+            "test_window": int(test_window),
+            "purge": int(purge),
+            "embargo": int(embargo),
+            "n_oos_bars": int(net.size),
+            "n_folds": int(np.ceil((n_scored - first_test) / test_window)),
+        },
+    )
 
 
 def equity_curve(net_returns: FloatArray) -> FloatArray:
@@ -243,4 +417,7 @@ def equity_curve(net_returns: FloatArray) -> FloatArray:
         raise ValidationError("equity_curve: net_returns must be non-empty.")
     if not np.isfinite(arr).all():
         raise ValidationError("equity_curve: net_returns contains non-finite values.")
-    raise NotImplementedError("equity_curve: typed stub — body to be authored.")
+    # Cumulative wealth index: the equity AFTER bar t is prod_{s<=t}(1 + net_s).
+    # This is exactly what the paper broker accrues bar by bar, so the two curves
+    # coincide to 1e-10 (the parity oracle).
+    return np.cumprod(1.0 + arr).astype("float64")

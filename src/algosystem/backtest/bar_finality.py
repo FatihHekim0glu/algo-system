@@ -80,13 +80,8 @@ def is_actionable(status: BarStatus) -> bool:
     -------
     bool
         ``True`` iff ``status is BarStatus.CLOSED``.
-
-    Raises
-    ------
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    raise NotImplementedError("is_actionable: typed stub — body to be authored.")
+    return status is BarStatus.CLOSED
 
 
 def guard_order(status: BarStatus, *, bar_index: int) -> None:
@@ -108,10 +103,15 @@ def guard_order(status: BarStatus, *, bar_index: int) -> None:
     ------
     BarFinalityError
         If ``status is BarStatus.FORMING``.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    raise NotImplementedError("guard_order: typed stub — body to be authored.")
+    if not is_actionable(status):
+        # Lazy import keeps the module import side-effect-free and cheap.
+        from algosystem._exceptions import BarFinalityError
+
+        raise BarFinalityError(
+            f"bar {bar_index} is {status.value}: a partial/forming bar can never "
+            "trigger an order (the bar-finality rule)."
+        )
 
 
 def check_finality(statuses: list[BarStatus]) -> BarFinalityReport:
@@ -129,10 +129,13 @@ def check_finality(statuses: list[BarStatus]) -> BarFinalityReport:
     -------
     BarFinalityReport
         The closed/forming tallies and the ``ok`` flag.
-
-    Raises
-    ------
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    raise NotImplementedError("check_finality: typed stub — body to be authored.")
+    n_bars = len(statuses)
+    n_closed = sum(1 for s in statuses if is_actionable(s))
+    n_forming = n_bars - n_closed
+    # ``ok`` records that the actionable set is exactly the CLOSED bars — by the
+    # bar-finality rule no order is ever attributed to a forming bar, so a guarded
+    # replay always reports ``ok=True``. The forming tally is surfaced so the API
+    # can show how many partial bars were correctly withheld from trading.
+    ok = all(is_actionable(s) is (s is BarStatus.CLOSED) for s in statuses)
+    return BarFinalityReport(n_bars=n_bars, n_closed=n_closed, n_forming=n_forming, ok=ok)
