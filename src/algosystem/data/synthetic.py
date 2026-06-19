@@ -1,9 +1,5 @@
 """Synthetic single-asset OHLC bar processes — the honest-null testbed + sanity fixtures.
 
-[TYPED STUB — signatures, docstrings, and the frozen result dataclass are final;
-the bar-generation bodies raise :class:`NotImplementedError` for a sequential
-author to fill.]
-
 Generates a single-asset daily OHLC BAR panel (open/high/low/close with realistic
 INTRABAR structure) under three regimes, all seeded through
 :func:`algosystem._rng.make_rng` so a given ``(seed, n_obs, ...)`` reproduces the
@@ -34,9 +30,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from algosystem._exceptions import ValidationError
+from algosystem._rng import make_rng
+from algosystem._typing import FloatArray
 
 #: Default number of bars for the shipped synthetic panel (mirrors the API default).
 DEFAULT_N_OBS: int = 2000
@@ -49,6 +48,9 @@ START_PRICE: float = 100.0
 
 #: Probability of staying in the current latent regime each bar (sticky chain).
 REGIME_STICKINESS: float = 0.98
+
+#: Smallest permitted price level (keeps every bar strictly positive).
+_MIN_PRICE: float = 1e-8
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +87,53 @@ class BarPath:
             "columns": [str(c) for c in self.bars.columns],
             "regime_labels": [int(x) for x in self.regime_labels],
         }
+
+
+def _business_index(n_obs: int, start: str) -> pd.DatetimeIndex:
+    """Return an ``n_obs``-length business-day (Mon-Fri) ``DatetimeIndex``."""
+    return pd.bdate_range(start=start, periods=n_obs)
+
+
+def _bars_from_log_returns(
+    log_returns: FloatArray,
+    gen: np.random.Generator,
+    *,
+    intrabar_range_bps: float,
+    start: str,
+) -> pd.DataFrame:
+    """Build a strictly-positive OHLC bar panel from a close log-return vector.
+
+    The close path is anchored at :data:`START_PRICE`; the open of each bar is the
+    prior bar's close (a gapless open — the next-bar fill price the execution
+    engine reads), and a seeded intrabar half-range envelope wraps each bar so the
+    OHLC invariants ``low <= {open, close} <= high`` hold by construction.
+
+    The intrabar envelope is drawn AFTER the close path so the random draws are in
+    a fixed order, keeping the whole panel reproducible for a given generator.
+    """
+    returns = np.asarray(log_returns, dtype="float64").copy()
+    returns[0] = 0.0  # anchor the first observation at START_PRICE.
+    close = START_PRICE * np.exp(np.cumsum(returns))
+
+    # Open = prior close (gapless); the first open equals the first close.
+    open_ = np.empty_like(close)
+    open_[0] = close[0]
+    open_[1:] = close[:-1]
+
+    # Seeded intrabar half-range envelope around the bar's open/close extremes.
+    half_range = (intrabar_range_bps / 10_000.0) * close
+    span_hi = np.abs(gen.standard_normal(close.size)) * half_range
+    span_lo = np.abs(gen.standard_normal(close.size)) * half_range
+    bar_max = np.maximum(open_, close)
+    bar_min = np.minimum(open_, close)
+    high = bar_max + span_hi
+    low = np.maximum(bar_min - span_lo, _MIN_PRICE)  # strictly positive.
+
+    index = _business_index(close.size, start)
+    return pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close},
+        index=index,
+    ).astype("float64")
 
 
 def gbm_regime_bars(
@@ -138,10 +187,61 @@ def gbm_regime_bars(
     ------
     ValidationError
         If ``n_obs < 2``, ``n_regimes < 1``, or any volatility/range is negative.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    raise NotImplementedError("gbm_regime_bars: typed stub — body to be authored.")
+    if n_obs < 2:
+        raise ValidationError(f"gbm_regime_bars: n_obs must be >= 2, got {n_obs}.")
+    if n_regimes < 1:
+        raise ValidationError(f"gbm_regime_bars: n_regimes must be >= 1, got {n_regimes}.")
+    if base_vol < 0.0:
+        raise ValidationError(f"gbm_regime_bars: base_vol must be >= 0, got {base_vol}.")
+    if intrabar_range_bps < 0.0:
+        raise ValidationError(
+            f"gbm_regime_bars: intrabar_range_bps must be >= 0, got {intrabar_range_bps}."
+        )
+    if microstructure_bps < 0.0:
+        raise ValidationError(
+            f"gbm_regime_bars: microstructure_bps must be >= 0, got {microstructure_bps}."
+        )
+
+    gen = make_rng(seed)
+
+    # Per-regime drift/vol: drifts centred near zero (honest null), vols fanned out
+    # mildly around ``base_vol`` so the regimes are volatility states, not edges.
+    spread = np.linspace(-1.0, 1.0, n_regimes) if n_regimes > 1 else np.zeros(1)
+    regime_drift = base_drift + 0.0 * spread  # drift identical & near-zero per regime.
+    regime_vol = base_vol * (1.0 + 0.5 * spread)
+    regime_vol = np.maximum(regime_vol, 0.0)
+
+    # Sticky Markov regime chain: stay with prob REGIME_STICKINESS, else jump to a
+    # uniformly-chosen OTHER regime. Unforecastable from the observable closes.
+    labels = np.empty(n_obs, dtype="int64")
+    labels[0] = int(gen.integers(0, n_regimes))
+    if n_regimes == 1:
+        labels[:] = 0
+    else:
+        stay = gen.random(n_obs) < REGIME_STICKINESS
+        jump = gen.integers(0, n_regimes - 1, size=n_obs)
+        for t in range(1, n_obs):
+            if stay[t]:
+                labels[t] = labels[t - 1]
+            else:
+                # Map the [0, n_regimes-1) draw to an index that skips the current.
+                candidate = int(jump[t])
+                labels[t] = candidate if candidate < labels[t - 1] else candidate + 1
+
+    # Diffusion term, regime-conditional; mean-reverting (AR(-1)) microstructure
+    # bid-ask bounce that averages out so it adds no exploitable drift.
+    eps = gen.standard_normal(n_obs)
+    diffusion = regime_drift[labels] + regime_vol[labels] * eps
+    micro_innov = (microstructure_bps / 10_000.0) * gen.standard_normal(n_obs)
+    micro = micro_innov.copy()
+    micro[1:] = micro_innov[1:] - micro_innov[:-1]  # first difference = bid-ask bounce.
+    log_returns = (diffusion + micro).astype("float64")
+
+    bars = _bars_from_log_returns(
+        log_returns, gen, intrabar_range_bps=intrabar_range_bps, start=start
+    )
+    return BarPath(bars=bars, regime_labels=tuple(int(x) for x in labels), kind="gbm_regime")
 
 
 def learnable_trend_bars(
@@ -186,10 +286,22 @@ def learnable_trend_bars(
     ------
     ValidationError
         If ``n_obs < 2`` or ``vol < 0``.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    raise NotImplementedError("learnable_trend_bars: typed stub — body to be authored.")
+    if n_obs < 2:
+        raise ValidationError(f"learnable_trend_bars: n_obs must be >= 2, got {n_obs}.")
+    if vol < 0.0:
+        raise ValidationError(f"learnable_trend_bars: vol must be >= 0, got {vol}.")
+    if intrabar_range_bps < 0.0:
+        raise ValidationError(
+            f"learnable_trend_bars: intrabar_range_bps must be >= 0, got {intrabar_range_bps}."
+        )
+
+    gen = make_rng(seed)
+    log_returns = (drift + vol * gen.standard_normal(n_obs)).astype("float64")
+    bars = _bars_from_log_returns(
+        log_returns, gen, intrabar_range_bps=intrabar_range_bps, start=start
+    )
+    return BarPath(bars=bars, regime_labels=tuple([0] * n_obs), kind="learnable_trend")
 
 
 def pure_noise_bars(
@@ -229,10 +341,22 @@ def pure_noise_bars(
     ------
     ValidationError
         If ``n_obs < 2`` or ``vol < 0``.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    raise NotImplementedError("pure_noise_bars: typed stub — body to be authored.")
+    if n_obs < 2:
+        raise ValidationError(f"pure_noise_bars: n_obs must be >= 2, got {n_obs}.")
+    if vol < 0.0:
+        raise ValidationError(f"pure_noise_bars: vol must be >= 0, got {vol}.")
+    if intrabar_range_bps < 0.0:
+        raise ValidationError(
+            f"pure_noise_bars: intrabar_range_bps must be >= 0, got {intrabar_range_bps}."
+        )
+
+    gen = make_rng(seed)
+    log_returns = (vol * gen.standard_normal(n_obs)).astype("float64")
+    bars = _bars_from_log_returns(
+        log_returns, gen, intrabar_range_bps=intrabar_range_bps, start=start
+    )
+    return BarPath(bars=bars, regime_labels=tuple([0] * n_obs), kind="pure_noise")
 
 
 def assert_ohlc_invariants(bars: pd.DataFrame) -> None:
@@ -251,11 +375,28 @@ def assert_ohlc_invariants(bars: pd.DataFrame) -> None:
     ------
     ValidationError
         If a required column is missing or any intrabar invariant is violated.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     if not {"open", "high", "low", "close"}.issubset(set(bars.columns)):
         raise ValidationError(
             "assert_ohlc_invariants: bars must have open/high/low/close columns."
         )
-    raise NotImplementedError("assert_ohlc_invariants: typed stub — body to be authored.")
+
+    open_ = bars["open"].to_numpy(dtype="float64")
+    high = bars["high"].to_numpy(dtype="float64")
+    low = bars["low"].to_numpy(dtype="float64")
+    close = bars["close"].to_numpy(dtype="float64")
+
+    if not bool(np.all(np.isfinite(np.concatenate([open_, high, low, close])))):
+        raise ValidationError("assert_ohlc_invariants: bars contain non-finite prices.")
+    if not bool(np.all((open_ > 0.0) & (high > 0.0) & (low > 0.0) & (close > 0.0))):
+        raise ValidationError("assert_ohlc_invariants: all prices must be strictly positive.")
+    if not bool(np.all(high >= low)):
+        raise ValidationError("assert_ohlc_invariants: high must be >= low for every bar.")
+    if not bool(np.all((high >= open_) & (high >= close))):
+        raise ValidationError(
+            "assert_ohlc_invariants: high must be >= open and >= close for every bar."
+        )
+    if not bool(np.all((low <= open_) & (low <= close))):
+        raise ValidationError(
+            "assert_ohlc_invariants: low must be <= open and <= close for every bar."
+        )

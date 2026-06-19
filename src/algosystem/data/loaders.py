@@ -1,8 +1,5 @@
 """Real-data loaders: Polygon PIT single-asset OHLC bars (CLI path) + synthetic default.
 
-[TYPED STUB — signatures, docstrings, and the routing contract are final; the
-loader bodies raise :class:`NotImplementedError` for a sequential author to fill.]
-
 The default, deployed data path is the seeded synthetic OHLC bar process
 (:mod:`algosystem.data.synthetic`) — no API keys, no survivorship questions, and
 the honest NULL holds by construction. This module is the OFFLINE CLI path for
@@ -26,11 +23,37 @@ from datetime import date
 
 import pandas as pd
 
-from algosystem._exceptions import ValidationError
-from algosystem.data import DataSource
+from algosystem._exceptions import AlgoSystemError, ValidationError
+from algosystem.data import DataSource, compute_returns
 
 #: The synthetic process kinds routed by :func:`synthetic_default_bars`.
 SYNTHETIC_KINDS: frozenset[str] = frozenset({"gbm_regime", "learnable_trend", "pure_noise"})
+
+#: Canonical OHLC column order for the bar panel these loaders emit.
+_OHLC_COLUMNS: tuple[str, ...] = ("open", "high", "low", "close")
+
+
+def _bars_from_close_panel(closes: pd.Series) -> pd.DataFrame:
+    """Assemble a single-asset OHLC bar panel from a Point-in-Time close series.
+
+    The vendored Polygon provider returns adjusted CLOSES only; there is no
+    intrabar quote. We build a no-lookahead, leakage-free OHLC frame with the
+    gapless-open convention used everywhere in this package — the open of bar
+    ``t`` is the prior bar's close (the next-bar fill price the execution engine
+    reads) — and a degenerate intrabar envelope where ``high`` / ``low`` bracket
+    the open and close so the OHLC invariants hold without inventing any intrabar
+    information the data does not contain.
+    """
+    close = closes.astype("float64")
+    open_ = close.shift(1)
+    open_.iloc[0] = close.iloc[0]  # first open == first close (gapless anchor).
+    high = pd.concat([open_, close], axis=1).max(axis=1)
+    low = pd.concat([open_, close], axis=1).min(axis=1)
+    frame = pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close},
+        index=close.index,
+    )
+    return frame.reindex(columns=list(_OHLC_COLUMNS)).astype("float64")
 
 
 def load_single_asset_bars(
@@ -75,8 +98,6 @@ def load_single_asset_bars(
     ------
     ValidationError
         If ``ticker`` is empty or ``end <= start``.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     if not ticker or not ticker.strip():
         raise ValidationError("load_single_asset_bars: ticker must be a non-empty symbol.")
@@ -84,7 +105,32 @@ def load_single_asset_bars(
         raise ValidationError(
             f"load_single_asset_bars: end ({end}) must be after start ({start})."
         )
-    raise NotImplementedError("load_single_asset_bars: typed stub — body to be authored.")
+
+    if data_source_pref == "polygon":
+        try:
+            # LAZY: pulls in httpx (the ``data`` extra) only on the real-data path.
+            from algosystem.data_providers.polygon import PolygonProvider
+
+            provider = PolygonProvider()
+            panel = provider.fetch([ticker], start, end)
+            closes = panel[ticker].astype("float64")
+            bars = _bars_from_close_panel(closes)
+            returns = compute_returns(bars["close"])
+            return bars, returns, "polygon"
+        except (AlgoSystemError, OSError, RuntimeError, ValueError, KeyError, ImportError):
+            # No key / no network / ``data`` extra absent / empty payload: fall
+            # through to the deterministic synthetic path so CALLERS stay offline-safe.
+            pass
+
+    # ``synthetic`` / ``auto`` / any Polygon failure: deterministic synthetic bars.
+    span_obs = max(2, _business_days_between(start, end))
+    return synthetic_default_bars(n_obs=span_obs, seed=seed, kind="gbm_regime")
+
+
+def _business_days_between(start: date, end: date) -> int:
+    """Count business days in ``[start, end]`` for the synthetic-fallback length."""
+    index = pd.bdate_range(start=pd.Timestamp(start), end=pd.Timestamp(end))
+    return len(index)
 
 
 def synthetic_default_bars(
@@ -119,8 +165,6 @@ def synthetic_default_bars(
     ------
     ValidationError
         If ``kind`` is unknown or ``n_obs < 2``.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     if kind not in SYNTHETIC_KINDS:
         raise ValidationError(
@@ -129,4 +173,21 @@ def synthetic_default_bars(
         )
     if n_obs < 2:
         raise ValidationError(f"synthetic_default_bars: n_obs must be >= 2, got {n_obs}.")
-    raise NotImplementedError("synthetic_default_bars: typed stub — body to be authored.")
+
+    # Import the generators here (cheap numpy/pandas only; no network, no heavy deps).
+    from algosystem.data.synthetic import (
+        gbm_regime_bars,
+        learnable_trend_bars,
+        pure_noise_bars,
+    )
+
+    if kind == "gbm_regime":
+        path = gbm_regime_bars(n_obs=n_obs, seed=seed)
+    elif kind == "learnable_trend":
+        path = learnable_trend_bars(n_obs=n_obs, seed=seed)
+    else:  # "pure_noise"
+        path = pure_noise_bars(n_obs=n_obs, seed=seed)
+
+    bars = path.bars
+    returns = compute_returns(bars["close"])
+    return bars, returns, "synthetic"
