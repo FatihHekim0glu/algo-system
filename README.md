@@ -38,7 +38,7 @@ For the architecture, module map, and the recorded decisions behind each guard, 
 
 | Guard | What it enforces |
 | --- | --- |
-| **Causal signal + next-bar fill** | The signal at bar `t` reads ONLY closed bars `≤ t` and applies to the `t→t+1` return; orders fill at the NEXT bar's OPEN, never the same bar's close. Perturbing the forming/future bar does not change the order at `t` (property test). |
+| **Causal signal + next-bar fill** | The signal at bar `t` reads ONLY closed bars `≤ t` and is applied to the `t→t+1` return (close-to-close accounting — equivalent to a next-bar-open fill under the gapless synthetic feed; see Limitations), never the same bar's close. Perturbing the forming/future bar does not change the order at `t` (property test). |
 | **Bar-finality guard** | A partial / unclosed bar can NEVER trigger an order (tested). |
 | **Backtest↔live parity oracle** | The vectorized backtest equity curve equals the paper-broker equity curve to `1e-10` for any signal/param (Hypothesis test). A deliberately-leaky backtester negative control is CAUGHT by the oracle. |
 | **Purged walk-forward** | Rolling in-sample/out-of-sample folds with a purge + embargo; costs + slippage applied IDENTICALLY in backtest and paper execution. |
@@ -145,8 +145,16 @@ pytest -q -m "not slow" --cov=algosystem --cov-report=term --cov-fail-under=85
   (the honest null holds); it is not historical market data.
 - **Single-asset.** One instrument at a time; no cross-sectional, portfolio, or
   hedging effects.
-- **Idealized fills.** Next-bar-open fills with fixed per-side basis-point costs and
-  slippage; no partial fills, no market impact, no queue position, no latency.
+- **Idealized fills (close-to-close accounting).** A position decided at the close of
+  bar `t` earns the `close[t]→close[t+1]` return net of fixed per-side basis-point
+  costs and slippage; no partial fills, no market impact, no queue position, no
+  latency. This is exactly a "next-bar-open fill" only under the **gapless** synthetic
+  generator (where `open[t+1] == close[t]`, so open-to-open ≡ close-to-close). On
+  **gapped real data** `open[t+1] ≠ close[t]`, so a literal next-open fill would earn
+  `open[t+1]→…` rather than the close-to-close return modelled here. The backtest↔live
+  parity oracle still holds (both paths use the same close-return convention), so it
+  would **not** flag this real-data fill-price nuance — pricing the open leg explicitly
+  is documented future work.
 - **PIT / survivorship.** The Polygon-PIT offline path is point-in-time but does not
   model delisting / survivorship beyond the provider's coverage.
 
