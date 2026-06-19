@@ -1,9 +1,5 @@
 """OOS performance metrics for a single-asset strategy net-return series.
 
-[TYPED STUB — signatures, docstrings, and the frozen ``StrategyMetrics`` bundle are
-final; the metric bodies raise :class:`NotImplementedError` for a sequential author
-to fill.]
-
 The scalar summaries the verdict + API consume, all judged net of simulated
 transaction costs + slippage:
 
@@ -123,12 +119,17 @@ def oos_sharpe(
     ------
     ValidationError
         If ``net_returns`` is empty or non-finite.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    _coerce_series(net_returns, name="net_returns")
-    del risk_free, periods_per_year
-    raise NotImplementedError("oos_sharpe: typed stub — body to be authored.")
+    arr = _coerce_series(net_returns, name="net_returns")
+    # Sample standard deviation (ddof=1): a single observation has no dispersion
+    # estimate, so its Sharpe is undefined (NaN), as is a numerically-flat series.
+    if arr.size < 2:
+        return float("nan")
+    sigma = float(np.std(arr, ddof=1))
+    if sigma <= 0.0:
+        return float("nan")
+    excess_mean = float(np.mean(arr)) - risk_free
+    return excess_mean / sigma * math.sqrt(periods_per_year)
 
 
 def max_drawdown(net_returns: FloatArray) -> float:
@@ -152,11 +153,14 @@ def max_drawdown(net_returns: FloatArray) -> float:
     ------
     ValidationError
         If ``net_returns`` is empty or non-finite.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    _coerce_series(net_returns, name="net_returns")
-    raise NotImplementedError("max_drawdown: typed stub — body to be authored.")
+    arr = _coerce_series(net_returns, name="net_returns")
+    # Cumulative wealth W_t = prod_{s<=t}(1 + r_s), its running peak, and the most
+    # negative W_t / peak_t - 1. A never-declining series has drawdown 0.0.
+    wealth = np.cumprod(1.0 + arr)
+    running_peak = np.maximum.accumulate(wealth)
+    drawdowns = wealth / running_peak - 1.0
+    return float(np.min(drawdowns))
 
 
 def turnover(positions: FloatArray, *, initial_position: float = 0.0) -> float:
@@ -183,13 +187,14 @@ def turnover(positions: FloatArray, *, initial_position: float = 0.0) -> float:
     ------
     ValidationError
         If ``positions`` is empty or non-finite.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     if not math.isfinite(initial_position):
         raise ValidationError(f"initial_position must be finite, got {initial_position!r}.")
-    _coerce_series(positions, name="positions")
-    raise NotImplementedError("turnover: typed stub — body to be authored.")
+    pos = _coerce_series(positions, name="positions")
+    # The first change is taken against ``initial_position`` (the book opens flat by
+    # default), so prepend it before differencing: sum |pi_t - pi_{t-1}|.
+    prev = np.concatenate(([initial_position], pos[:-1]))
+    return float(np.sum(np.abs(pos - prev)))
 
 
 def net_pnl(net_returns: FloatArray) -> float:
@@ -212,11 +217,9 @@ def net_pnl(net_returns: FloatArray) -> float:
     ------
     ValidationError
         If ``net_returns`` is empty or non-finite.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
-    _coerce_series(net_returns, name="net_returns")
-    raise NotImplementedError("net_pnl: typed stub — body to be authored.")
+    arr = _coerce_series(net_returns, name="net_returns")
+    return float(np.prod(1.0 + arr) - 1.0)
 
 
 def strategy_metrics(
@@ -248,8 +251,6 @@ def strategy_metrics(
     ------
     ValidationError
         If the inputs are empty / non-finite / length-mismatched.
-    NotImplementedError
-        Always (this is a typed stub for a sequential author).
     """
     net = _coerce_series(net_returns, name="net_returns")
     pos = _coerce_series(positions, name="positions")
@@ -258,5 +259,10 @@ def strategy_metrics(
             f"net_returns (len {net.size}) and positions (len {pos.size}) must have the "
             "same length; both index the scored OOS window."
         )
-    del initial_position, periods_per_year
-    raise NotImplementedError("strategy_metrics: typed stub — body to be authored.")
+    return StrategyMetrics(
+        oos_sharpe=oos_sharpe(net, periods_per_year=periods_per_year),
+        max_drawdown=max_drawdown(net),
+        turnover=turnover(pos, initial_position=initial_position),
+        net_pnl=net_pnl(net),
+        n_bars=int(net.size),
+    )
