@@ -44,29 +44,43 @@ For the architecture, module map, and the recorded decisions behind each guard, 
 | **Purged walk-forward** | Rolling in-sample/out-of-sample folds with a purge + embargo; costs + slippage applied IDENTICALLY in backtest and paper execution. |
 | **Honest multiplicity** | DSR `n_trials` = #signals × #param configs; PBO via CSCV. |
 
+> **Summary metrics are purged-OOS; the equity-overlay figures are full-sample.** The
+> headline summary numbers (OOS net Sharpe, max drawdown, turnover, the
+> Diebold-Mariano test, and the Deflated-Sharpe observed Sharpe) are computed on the
+> concatenated **purged walk-forward out-of-sample folds** — genuinely out-of-sample.
+> Both entry points (`algo-system` CLI `run_pipeline` and `serve.run_system`) compute
+> them the same way, so they report **identical** headline metrics + verdict for the
+> same config (pinned by `tests/regression/test_cli_serve_parity.py`). The
+> **backtest↔live equity-overlay figures and the parity oracle run on the FULL sample**:
+> parity is a fill-accounting check independent of the train/test folding, and the
+> PBO/CSCV matrix is full-sample because CSCV does its own in-sample/out-of-sample
+> splitting.
+
 ## Validation
 
 These are the committed reference metrics from
 [`src/algosystem/artifacts/reference.json`](src/algosystem/artifacts/reference.json),
 the deployed-default summary the request path serves verbatim. The configuration is
 `ma_crossover` 10/50, `cost_bps=5`, `slippage_bps=2`, `seed=7`, 2000 synthetic bars.
-(Regenerate with `python scripts/build_reference.py`.)
+The headline metrics are **purged walk-forward out-of-sample** (the CLI and the
+serve path now compute them identically — see the note above). (Regenerate with
+`python scripts/build_reference.py`.)
 
 | Metric | Value | Reading |
 | --- | --- | --- |
-| OOS net Sharpe (system) | **−0.7070** | below buy-and-hold; no edge |
-| Buy-and-hold Sharpe | −0.0973 | the benchmark |
-| Diebold-Mariano p vs. buy-hold | 0.1929 | insignificant (≥ `0.05`) — DM gate fails |
-| Deflated Sharpe (DSR) | 0.00323 | a probability; far below the `1 − α = 0.95` gate |
+| OOS net Sharpe (system) | **−0.7040** | below buy-and-hold; no edge |
+| Buy-and-hold Sharpe | −0.0467 | the benchmark |
+| Diebold-Mariano p vs. buy-hold | 0.1798 | insignificant (≥ `0.05`) — DM gate fails |
+| Deflated Sharpe (DSR) | 0.00561 | a probability; far below the `1 − α = 0.95` gate |
 | PBO (CSCV) | 0.8626 | ≥ `0.5` — overfitting gate fails |
 | Effective trials (DSR multiplicity) | 7 | #signals × #param configs |
-| Max drawdown | −69.1% | — |
-| Turnover | 131.0 | — |
+| Max drawdown | −64.1% | — |
+| Turnover | 123.0 | — |
 | **`backtest_live_parity_max_diff`** | **0.0** | backtest == live to the cent |
 | `bar_finality_ok` | True | no order off an unclosed bar |
 | **`system_has_edge`** | **False** | the honest NULL verdict |
 
-All three edge gates fail independently (DM insignificant, DSR `0.003 ≤ 0.95`,
+All three edge gates fail independently (DM insignificant, DSR `0.006 ≤ 0.95`,
 PBO `0.86 ≥ 0.5`), so the PURE `system_has_edge` verdict is `False`. The deliverable
 is the load-bearing parity (`max-diff = 0.0`), not the strategy.
 
@@ -87,7 +101,7 @@ green in CI. These — not any return number — are the product.
 | Sharpe / drawdown / turnover | PASS | hand references |
 | `learnable_trend` / `regime_trend` SANITY | PASS | a tradeable trend IS captured (`regime_trend`: `dm_pvalue ≈ 1e-5`, beats buy-hold) |
 | **Honest-null** | PASS | `system_has_edge = False` after costs + DSR + PBO; deterministic across `PYTHONHASHSEED` |
-| Coverage | PASS | `86.31%` ≥ `85%`; ruff + strict-mypy clean |
+| Coverage | PASS | `86.35%` ≥ `85%`; ruff + strict-mypy clean |
 
 The SANITY check uses a **directional regime-trend** DGP (`regime_trend_bars`:
 alternating persistent up / down trends): the long/short MA-crossover flips short

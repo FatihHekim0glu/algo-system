@@ -6,10 +6,26 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- The CLI `run_pipeline` computed the headline OOS Sharpe + Diebold-Mariano (and the
+  buy-hold baseline, turnover, drawdown, and DSR observed Sharpe) on FULL-SAMPLE net
+  returns, while `serve.run_system` correctly used the purged walk-forward OOS folds
+  — so the two entry points could report different "honest" numbers for the same
+  config (leaked-vs-honest divergence). The CLI now computes the headline metrics +
+  DM + DSR observed Sharpe on the purged walk-forward OUT-OF-SAMPLE folds, exactly
+  like serve; the backtest↔live parity oracle stays on the full sample (a
+  fill-accounting check) and the PBO/CSCV stays on the full-sample grid (CSCV does
+  its own in-sample/out-of-sample splitting). Added
+  `tests/regression/test_cli_serve_parity.py` asserting the CLI and serve produce the
+  IDENTICAL verdict + headline metrics for the same config. Corrected the README
+  **Validation** table to the committed purged-OOS reference numbers (OOS Sharpe
+  −0.7040, buy-hold −0.0467, DM p 0.1798, deflated Sharpe 0.00561, max drawdown
+  −64.1%, turnover 123.0).
+
 ### Added
 - Documentation pass: filled the README **Validation** section with the actual
   committed metrics from `src/algosystem/artifacts/reference.json` (OOS Sharpe
-  −0.7070 vs. buy-hold −0.0973, DM p 0.1929, deflated Sharpe 0.00323, PBO 0.8626,
+  −0.7040 vs. buy-hold −0.0467, DM p 0.1798, deflated Sharpe 0.00561, PBO 0.8626,
   `n_effective_trials` 7, `backtest_live_parity_max_diff` 0.0, `system_has_edge`
   False) and a correctness-gates table (parity oracle `1e-10`, leaky negative
   control caught, DSR `1e-10`, DM, PBO/CSCV, causal-signal/next-bar-fill,
