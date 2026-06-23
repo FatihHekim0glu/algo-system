@@ -14,10 +14,20 @@ The CLI is the OFFLINE entry point (the deployed default uses the FastAPI
 Typer (the ``dev`` extra) is imported LAZILY inside :func:`_build_app` / :func:`main`
 so importing this module has no side effects and pulls in nothing heavy. The full
 pipeline is assembled HERE from the leakage-free primitives (data -> signal ->
-vectorized backtest + paper-broker replay -> parity oracle -> metrics -> DM / DSR /
-PBO -> PURE verdict); it does NOT depend on the serve-time ``run_system`` entry
-point. Demos are behind the ``__main__`` guard. Importing this module has no side
-effects.
+purged walk-forward backtest + paper-broker replay -> parity oracle -> metrics ->
+DM / DSR / PBO -> PURE verdict); it does NOT depend on the serve-time ``run_system``
+entry point but produces the IDENTICAL summary verdict + headline metrics for the
+same config (no leaked-vs-honest divergence — pinned by a regression test). Demos
+are behind the ``__main__`` guard. Importing this module has no side effects.
+
+SUMMARY METRICS ARE PURGED-OOS; THE EQUITY OVERLAY IS FULL-SAMPLE PARITY. The
+headline summary numbers (OOS net Sharpe / drawdown / turnover, the Diebold-Mariano
+test, and the Deflated-Sharpe observed-Sharpe) are computed on the CONCATENATED
+purged walk-forward OUT-OF-SAMPLE folds (purge + embargo) — genuinely out-of-sample,
+exactly as :func:`algosystem.serve.run_system` does. The backtest<->live parity
+oracle and the PBO/CSCV matrix run on the FULL sample: parity is a fill-accounting
+check independent of the train/test folding, and CSCV does its OWN in-sample /
+out-of-sample splitting over the full-sample grid.
 """
 
 from __future__ import annotations
@@ -30,7 +40,7 @@ import numpy as np
 
 from algosystem._exceptions import ValidationError
 from algosystem._typing import FloatArray
-from algosystem.backtest.engine import vectorized_backtest
+from algosystem.backtest.engine import vectorized_backtest, walk_forward_signal_backtest
 from algosystem.data.loaders import synthetic_default_bars
 from algosystem.evaluation.diebold_mariano import diebold_mariano
 from algosystem.evaluation.dsr import deflated_sharpe_ratio
@@ -73,27 +83,30 @@ class PipelineResult:
     signal:
         The selected signal name.
     oos_sharpe:
-        The selected strategy's OOS net Sharpe (net of costs + slippage).
+        The selected strategy's purged walk-forward OOS net Sharpe (net of costs +
+        slippage).
     buyhold_sharpe:
-        The buy-and-hold OOS net Sharpe.
+        The buy-and-hold purged walk-forward OOS net Sharpe.
     dm_statistic:
-        The Diebold-Mariano statistic of the strategy net return vs. buy-and-hold
+        The Diebold-Mariano statistic of the strategy OOS net return vs. buy-and-hold
         (positive favours the strategy).
     dm_pvalue:
-        The two-sided DM p-value.
+        The two-sided DM p-value (on the purged-OOS net-return differential).
     deflated_sharpe:
-        The Deflated Sharpe (honest #signals x #param-config ``n_trials``).
+        The Deflated Sharpe (honest #signals x #param-config ``n_trials``) of the
+        selected config's purged-OOS net return.
     pbo:
-        The Probability of Backtest Overfitting (CSCV).
+        The Probability of Backtest Overfitting (CSCV over the full-sample grid;
+        CSCV does its own in-sample/out-of-sample splitting).
     parity_max_diff:
-        The max abs per-bar diff between the backtest and paper-broker equity curves
-        (the parity oracle; ``~0`` when they coincide).
+        The max abs per-bar diff between the FULL-SAMPLE backtest and paper-broker
+        equity curves (the parity oracle; ``~0`` when they coincide).
     parity_ok:
         ``True`` iff the parity oracle passed (backtest == live to ``1e-10``).
     turnover:
-        The selected strategy's total one-way turnover.
+        The selected strategy's total one-way turnover over the purged-OOS folds.
     max_drawdown:
-        The selected strategy's worst peak-to-trough drawdown (``<= 0``).
+        The selected strategy's worst purged-OOS peak-to-trough drawdown (``<= 0``).
     n_trials:
         The honest multiplicity count (#signals x #param configs).
     data_source:
@@ -180,11 +193,17 @@ def run_pipeline(
     """Run the full offline pipeline for one selected config; return the metrics + verdict.
 
     Loads the synthetic default OHLC bars, evaluates the FULL #signals x #param
-    grid through the vectorized backtester, runs the backtest<->live parity oracle
-    on the selected config, computes the OOS metrics, the Diebold-Mariano test vs.
-    buy-and-hold, the Deflated Sharpe (honest grid-wide ``n_trials``), the PBO/CSCV,
-    and derives the PURE ``system_has_edge`` verdict. Pure numpy/scipy/statsmodels;
-    no network on the synthetic path; never trains.
+    grid through the vectorized backtester (for the PBO/CSCV matrix + trial-Sharpe
+    variance), runs the FULL-SAMPLE backtest<->live parity oracle on the selected
+    config, then computes the HEADLINE metrics (OOS Sharpe / drawdown / turnover),
+    the Diebold-Mariano test vs. buy-and-hold, and the Deflated-Sharpe observed
+    Sharpe on the CONCATENATED purged walk-forward OUT-OF-SAMPLE folds (purge +
+    embargo) — exactly as :func:`algosystem.serve.run_system` does, so the CLI and
+    serve verdicts + headline numbers agree for the same config. The PBO/CSCV runs
+    over the full-sample grid (CSCV does its own in-sample/out-of-sample splitting)
+    and the parity oracle is a full-sample fill-accounting check independent of the
+    train/test folding. Derives the PURE ``system_has_edge`` verdict. Pure
+    numpy/scipy/statsmodels; no network on the synthetic path; never trains.
 
     Parameters
     ----------
@@ -254,32 +273,58 @@ def run_pipeline(
     assert selected_net is not None  # the selected spec is always in the grid.
     assert selected_positions is not None
 
+    # The full-length aligned target positions for the selected config (one per
+    # scored return). The vectorized backtester / paper broker / walk-forward all
+    # ingest this same vector; the engine applies the ``shift`` internally.
+    selected_pos_full = _align_positions(build_signal(selected, close), n_ret)
+
     # The backtest<->live PARITY ORACLE on the selected config: the vectorized
     # backtest equity curve must equal the simulated paper-broker replay to 1e-10.
     parity = check_parity(
         ret,
-        _align_positions(build_signal(selected, close), n_ret),
+        selected_pos_full,
         cost_bps=cost_bps,
         slippage_bps=slippage_bps,
     )
 
-    # Buy-and-hold baseline: a constant long position over the same path + frictions.
-    buyhold = vectorized_backtest(
-        ret, np.ones(n_ret, dtype="float64"), cost_bps=cost_bps, slippage_bps=slippage_bps
+    # Buy-and-hold baseline position: a constant long over the same path + frictions
+    # (the bar the strategy must clear). The CLI scores it ONLY on the purged-OOS
+    # folds below — it builds no figures, so it needs no full-sample buy-hold curve.
+    buyhold_pos = np.ones(n_ret, dtype="float64")
+
+    # PURGED WALK-FORWARD OOS (mirrors serve.run_system). The HEADLINE metrics
+    # (Sharpe / drawdown / turnover), the Diebold-Mariano test and the DSR observed
+    # Sharpe are computed on the CONCATENATED purged-walk-forward OUT-OF-SAMPLE folds
+    # (purge >= 1 boundary observation + embargo = 1 return horizon), NOT on the full
+    # in-sample path — so ``oos_sharpe`` is genuinely out-of-sample. The selected
+    # config and the buy-hold baseline are folded with IDENTICAL geometry, so their
+    # OOS net-return paths align bar-for-bar for the DM differential. (The parity
+    # oracle above runs on the full path because backtest<->live agreement is a
+    # fill-accounting property, independent of the train/test folding; the selected
+    # config's FULL-sample column already lives in ``net_columns`` for the PBO/CSCV
+    # matrix below.)
+    wf_selected = walk_forward_signal_backtest(
+        ret, selected_pos_full, cost_bps=cost_bps, slippage_bps=slippage_bps
+    )
+    wf_buyhold = walk_forward_signal_backtest(
+        ret, buyhold_pos, cost_bps=cost_bps, slippage_bps=slippage_bps
     )
 
-    # OOS metrics for the selected strategy (net of costs + slippage).
-    metrics = strategy_metrics(selected_net, selected_positions)
-    buyhold_metrics = strategy_metrics(buyhold.net_returns, buyhold.positions)
+    # OOS metrics for the selected strategy + buy-hold (net of costs + slippage),
+    # both on the purged-walk-forward OOS folds.
+    metrics = strategy_metrics(wf_selected.net_returns, wf_selected.positions)
+    buyhold_metrics = strategy_metrics(wf_buyhold.net_returns, wf_buyhold.positions)
 
-    # Diebold-Mariano of the selected strategy vs. buy-and-hold per-bar net return.
-    dm_statistic, dm_pvalue = diebold_mariano(selected_net, buyhold.net_returns)
+    # Diebold-Mariano of the selected strategy vs. buy-and-hold per-bar OOS net return.
+    dm_statistic, dm_pvalue = diebold_mariano(wf_selected.net_returns, wf_buyhold.net_returns)
 
     # Deflated Sharpe with the HONEST grid-wide n_trials and the selected config's
-    # per-obs Sharpe + sample moments; PBO/CSCV over the full grid's net-return
-    # matrix. The DSR is non-increasing in n_trials (the multiplicity deflation).
+    # OOS per-obs Sharpe + sample moments; PBO/CSCV over the full grid's net-return
+    # matrix (CSCV does its OWN in-sample/out-of-sample splitting, so it correctly
+    # consumes the full-sample grid). The DSR is non-increasing in n_trials (the
+    # multiplicity deflation).
     n_trials = len(grid)
-    sel_arr = np.asarray(selected_net, dtype="float64").ravel()
+    sel_arr = np.asarray(wf_selected.net_returns, dtype="float64").ravel()
     skew, kurtosis = _sample_moments(sel_arr)
     var_trials = float(np.var(np.asarray(trial_sharpes, dtype="float64"), ddof=1))
     dsr = deflated_sharpe_ratio(
@@ -399,7 +444,7 @@ def _build_app() -> typer.Typer:
             slippage_bps=slippage_bps,
             seed=seed,
         )
-        for line in _format_result_lines(result, header="Backtest (vectorized OOS)"):
+        for line in _format_result_lines(result, header="Backtest (purged walk-forward OOS)"):
             typer.echo(line)
 
     @app.command()
