@@ -39,6 +39,9 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.26",
+    # Shared honest-statistics primitives (PSR/DSR, PBO/CSCV, Newey-West HAC). The
+    # evaluation layer re-exports these so the math has a single source of truth.
+    "quantcore @ git+https://github.com/FatihHekim0glu/quantcore@v0.1.0",
 ]
 
 [project.urls]
